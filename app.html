@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Moodiva — Editor</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <link href="css/style.css" rel="stylesheet" />
+</head>
+<body class="bg-dark text-light">
+  <main class="container-fluid py-3">
+    <a href="index.html" class="btn btn-sm btn-outline-light mb-3">← Projects</a>
+    <h2 id="title">Loading…</h2>
+
+    <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+      <button id="modeDraw" class="btn btn-primary btn-sm">Draw wall</button>
+      <button id="modeEdit" class="btn btn-outline-warning btn-sm">Edit</button>
+      <button id="deleteSelected" class="btn btn-danger btn-sm" disabled>Delete</button>
+      <button id="modeSelect" class="btn btn-outline-light btn-sm">Select / move</button>
+      <span class="text-muted small">Shift+drag or middle-drag to pan · wheel to zoom · Delete removes selected · Esc cancels</span>
+      <span class="ms-auto d-flex gap-2 align-items-center">
+        <button id="zoomIn" class="btn btn-outline-light btn-sm">+</button>
+        <button id="zoomOut" class="btn btn-outline-light btn-sm">−</button>
+        <button id="zoomReset" class="btn btn-outline-light btn-sm">Reset view</button>
+      </span>
+    </div>
+
+    <div id="inspector" class="d-none align-items-center gap-2 mb-2 small">
+      <strong>Selected wall:</strong>
+      <label>Length (cm) <input id="wallLen" type="number" step="1" min="5" style="width:90px" class="form-control form-control-sm d-inline-block" /></label>
+      <label>Angle (°) <input id="wallAngle" type="number" step="1" style="width:80px" class="form-control form-control-sm d-inline-block" /></label>
+      <label>Thickness (cm) <input id="wallThick" type="number" step="1" min="5" max="60" style="width:70px" class="form-control form-control-sm d-inline-block" /></label>
+      <span class="text-muted">(length anchored at wall start, angle measured from +X axis)</span>
+    </div>
+
+    <svg id="plan" style="width:100%; height:78vh; background:#111; border-radius:8px; touch-action:none;">
+      <g id="world"></g>
+      <g id="overlay"></g>
+    </svg>
+  </main>
+  <script src="js/storage.js"></script>
+  <script src="js/db.js"></script>
+  <script src="js/editor.js"></script>
+  <script>
+    (async () => {
+      const path = new URLSearchParams(location.search).get('project');
+      if (!path) { document.getElementById('title').textContent = 'No project specified.'; return; }
+      const ok = await Storage.tryReconnect();
+      if (!ok) { document.getElementById('title').textContent = 'No data folder connected — go back and pick one.'; return; }
+      const p = await DB.open(path);
+      document.getElementById('title').textContent = p.name;
+      Editor.init(p, path);
+    })();
+  </script>
+</body>
+</html>
