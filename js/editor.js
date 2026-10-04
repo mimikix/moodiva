@@ -4,7 +4,7 @@ const Editor = (() => {
   let project, projectPath, svg, world, overlay;
   let mode = 'select';         // 'draw' | 'select' | 'edit' | place door/window handled via pendingAsset
   let pendingAsset = null;     // 'door' | 'window' when placing
-  let selectedAsset = null;    // id of selected asset
+  let selectedAssets = new Set(); // ids of selected assets
   let assetDrag = null;        // {asset, wall}
   let snap = true;
   let wallThickness = 15;      // cm
@@ -28,7 +28,7 @@ const Editor = (() => {
   function restore(snap) {
     const s = JSON.parse(snap);
     project.walls = s.walls; project.assets = s.assets;
-    selectedIds = new Set(); selectedAsset = null;
+    selectedIds = new Set(); selectedAssets = new Set();
     scheduleSave(); updateDeleteBtn(); render();
   }
   function undo() { if (history.idx > 0) { history.idx--; restore(history.stack[history.idx]); updateUndoBtns(); } }
@@ -196,6 +196,7 @@ const Editor = (() => {
       t.textContent = `${fmtLen(wallLength(w))} · ${wallAngle(w).toFixed(1)}°`;
       grp.appendChild(t);
       grp.addEventListener('pointerdown', e => onWallDown(e, w));
+      grp.addEventListener('dblclick', e => { e.stopPropagation(); mode = 'edit'; drawing = null; updateDeleteBtn(); render(); });
       world.appendChild(grp);
       if (selected && mode === 'edit' && selectedIds.size === 1) {
         for (const end of ['p1', 'p2']) {
@@ -220,20 +221,23 @@ const Editor = (() => {
       const cx = w.x1 + ux * a.t * len, cy = w.y1 + uy * a.t * len;
       const x1 = cx - ux * hw, y1 = cy - uy * hw, x2 = cx + ux * hw, y2 = cy + uy * hw;
       const nx = -uy, ny = ux;
-      const selected = selectedAsset === a.id;
+      const selected = selectedAssets.has(a.id);
       const grp = el('g', { 'data-id': a.id, cursor: 'move' });
       if (a.type === 'door') {
         // open space: erase the wall segment
         grp.appendChild(el('line', { x1, y1, x2, y2, stroke: '#111', 'stroke-width': w.thickness, 'stroke-linecap': 'butt' }));
         const side = a.swing || 1;
-        const leafX = x1 + nx * side * a.width, leafY = y1 + ny * side * a.width;
-        grp.appendChild(el('line', { x1, y1, x2: leafX, y2: leafY, stroke: selected ? '#ffd166' : '#9ecbff', 'stroke-width': 2.5 / zoom }));
+        const hingeStart = (a.hinge || 1) === 1;
+        const hx = hingeStart ? x1 : x2, hy = hingeStart ? y1 : y2;
+        const ox = hingeStart ? x2 : x1, oy = hingeStart ? y2 : y1;
+        const leafX = hx + nx * side * a.width, leafY = hy + ny * side * a.width;
+        grp.appendChild(el('line', { x1: hx, y1: hy, x2: leafX, y2: leafY, stroke: selected ? '#ffd166' : '#9ecbff', 'stroke-width': 2.5 / zoom }));
         grp.appendChild(el('path', {
-          d: `M ${x2},${y2} A ${a.width} ${a.width} 0 0 ${side > 0 ? 1 : 0} ${leafX},${leafY}`,
+          d: `M ${ox},${oy} A ${a.width} ${a.width} 0 0 ${side * (hingeStart ? 1 : -1) > 0 ? 1 : 0} ${leafX},${leafY}`,
           fill: 'none', stroke: selected ? '#ffd166' : '#9ecbff', 'stroke-width': 1.2 / zoom, 'stroke-dasharray': `${4 / zoom} ${3 / zoom}`,
         }));
-      } else {
-        // window: rectangle on top of the wall
+      } else if (a.type === 'window') {
+        // rectangle on top of the wall
         const th = w.thickness / 2;
         const pts = [
           `${x1 + nx * th},${y1 + ny * th}`, `${x2 + nx * th},${y2 + ny * th}`,
@@ -241,12 +245,24 @@ const Editor = (() => {
         ].join(' ');
         grp.appendChild(el('polygon', { points: pts, fill: selected ? 'rgba(255,209,102,0.35)' : 'rgba(77,171,247,0.35)', stroke: selected ? '#ffd166' : '#4dabf7', 'stroke-width': 2 / zoom }));
         grp.appendChild(el('line', { x1, y1, x2, y2, stroke: selected ? '#ffd166' : '#4dabf7', 'stroke-width': 1.5 / zoom }));
+        // direction arc showing which way the window opens
+        const side = a.swing || 1;
+        const hingeStart = (a.hinge || 1) === 1;
+        const hx = hingeStart ? x1 : x2, hy = hingeStart ? y1 : y2;
+        const ox = hingeStart ? x2 : x1, oy = hingeStart ? y2 : y1;
+        const leafX = hx + nx * side * a.width, leafY = hy + ny * side * a.width;
+        grp.appendChild(el('line', { x1: hx, y1: hy, x2: leafX, y2: leafY, stroke: selected ? '#ffd166' : '#a5d8ff', 'stroke-width': 2 / zoom }));
+        grp.appendChild(el('path', {
+          d: `M ${ox},${oy} A ${a.width} ${a.width} 0 0 ${side * (hingeStart ? 1 : -1) > 0 ? 1 : 0} ${leafX},${leafY}`,
+          fill: 'none', stroke: selected ? '#ffd166' : '#a5d8ff', 'stroke-width': 1.2 / zoom, 'stroke-dasharray': `${4 / zoom} ${3 / zoom}`,
+        }));
       }
       if (selected) {
         grp.appendChild(el('line', { x1, y1, x2, y2, stroke: '#ffd166', 'stroke-opacity': 0.4, 'stroke-width': w.thickness + 8 / zoom }));
       }
       const hit = el('line', { x1, y1, x2, y2, stroke: 'transparent', 'stroke-width': Math.max(w.thickness, 16 / zoom + w.thickness) });
       hit.addEventListener('pointerdown', e => onAssetDown(e, a));
+      hit.addEventListener('dblclick', e => { e.stopPropagation(); mode = 'edit'; drawing = null; selectedAssets = new Set([a.id]); selectedIds = new Set(); updateDeleteBtn(); render(); });
       grp.appendChild(hit);
       world.appendChild(grp);
     }
@@ -309,8 +325,18 @@ const Editor = (() => {
     if (pendingAsset) return;
     if (mode !== 'select' && mode !== 'edit') return;
     e.stopPropagation();
-    selectedAsset = a.id; selectedIds = new Set();
-    if (mode === 'select') {
+    if (e.detail === 2) { // double click → edit mode + inspector
+      mode = 'edit'; drawing = null;
+      selectedAssets = new Set([a.id]); selectedIds = new Set();
+      updateDeleteBtn(); render(); return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      if (selectedAssets.has(a.id)) selectedAssets.delete(a.id); else selectedAssets.add(a.id);
+    } else {
+      selectedAssets = new Set([a.id]);
+    }
+    selectedIds = new Set();
+    if (mode === 'select' && selectedAssets.size === 1) {
       const w = project.walls.find(x => x.id === a.wallId);
       assetDrag = { asset: a, wall: w };
       svg.setPointerCapture(e.pointerId);
@@ -322,7 +348,7 @@ const Editor = (() => {
     if (pendingAsset) return;
     if (mode !== 'select' && mode !== 'edit') return;
     e.stopPropagation();
-    selectedAsset = null;
+    selectedAssets = new Set();
     if (e.ctrlKey || e.metaKey) {
       if (selectedIds.has(w.id)) selectedIds.delete(w.id); else selectedIds.add(w.id);
     } else {
@@ -338,7 +364,7 @@ const Editor = (() => {
   }
 
   function updateDeleteBtn() {
-    document.getElementById('deleteSelected').disabled = selectedIds.size === 0 && !selectedAsset;
+    document.getElementById('deleteSelected').disabled = selectedIds.size === 0 && selectedAssets.size === 0;
     updateInspector();
   }
 
@@ -357,7 +383,7 @@ const Editor = (() => {
   }
 
   function applyAssetInspector() {
-    const a = (project.assets || []).find(a => a.id === selectedAsset);
+    const a = selectedAssets.size === 1 ? (project.assets || []).find(a => a.id === [...selectedAssets][0]) : null;
     if (!a) return;
     const w = project.walls.find(x => x.id === a.wallId); if (!w) return;
     const len = wallLength(w);
@@ -369,12 +395,19 @@ const Editor = (() => {
   }
 
   function updateAssetInspector() {
-    const a = (project.assets || []).find(a => a.id === selectedAsset);
+    const a = selectedAssets.size === 1 ? (project.assets || []).find(a => a.id === [...selectedAssets][0]) : null;
     const box = document.getElementById('assetInspector');
     if (!a) { box.classList.add('d-none'); box.classList.remove('d-flex'); return; }
     box.classList.remove('d-none'); box.classList.add('d-flex');
     document.getElementById('assetType').textContent = a.type === 'door' ? 'Door' : 'Window';
     document.getElementById('assetWidth').value = a.width;
+  }
+
+  function applyAssetDir() {
+    const a = selectedAssets.size === 1 ? (project.assets || []).find(a => a.id === [...selectedAssets][0]) : null;
+    if (!a) return;
+    a.swing = (a.swing || 1) === 1 ? -1 : 1;
+    scheduleSave(); render(); pushHistory();
   }
 
   function updateInspector() {
@@ -432,7 +465,7 @@ const Editor = (() => {
           const t = Math.min(Math.max(bestT, hw / len), Math.max(hw / len, 1 - hw / len));
           const a = { id: crypto.randomUUID(), type: pendingAsset, wallId: best.id, t, width, swing: 1 };
           project.assets.push(a);
-          selectedAsset = a.id; selectedIds = new Set();
+          selectedAssets = new Set([a.id]); selectedIds = new Set();
           scheduleSave(); updateDeleteBtn(); pushHistory();
         }
         pendingAsset = null; mode = 'select'; render(); return;
@@ -454,7 +487,7 @@ const Editor = (() => {
       }
       // select mode, clicked empty space
       if (e.target === svg || e.target.tagName === 'line' && e.target.parentNode === world) {
-        selectedIds = new Set(); selectedAsset = null; panning = { x: e.clientX, y: e.clientY, panX, panY }; svg.setPointerCapture(e.pointerId); updateDeleteBtn(); render();
+        selectedIds = new Set(); selectedAssets = new Set(); panning = { x: e.clientX, y: e.clientY, panX, panY }; svg.setPointerCapture(e.pointerId); updateDeleteBtn(); render();
       }
     });
 
@@ -482,17 +515,27 @@ const Editor = (() => {
         render(); return;
       }
       if (assetDrag) {
-        const p = toWorld(e); const w = assetDrag.wall;
-        const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
-        const l2 = dx * dx + dy * dy;
-        if (l2) {
+        const p = toWorld(e);
+        // pick the wall closest to the pointer so the asset can move to any wall
+        let best = assetDrag.wall, bd = Infinity, bestT = assetDrag.asset.t;
+        for (const w of project.walls) {
+          const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
+          const l2 = dx * dx + dy * dy; if (!l2) continue;
           let t = ((p.x - w.x1) * dx + (p.y - w.y1) * dy) / l2;
-          const len = Math.sqrt(l2);
-          const hw = Math.min(assetDrag.asset.width / 2, len / 2);
-          t = Math.min(Math.max(t, hw / len), Math.max(hw / len, 1 - hw / len));
-          assetDrag.asset.t = t;
-          render();
+          t = Math.max(0, Math.min(1, t));
+          const px = w.x1 + t * dx, py = w.y1 + t * dy;
+          const d = Math.hypot(px - p.x, py - p.y);
+          if (d < bd) { bd = d; best = w; bestT = t; }
         }
+        const w = best;
+        const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
+        const len = Math.hypot(dx, dy) || 1;
+        const hw = Math.min(assetDrag.asset.width / 2, len / 2);
+        bestT = Math.min(Math.max(bestT, hw / len), Math.max(hw / len, 1 - hw / len));
+        assetDrag.asset.wallId = w.id;
+        assetDrag.asset.t = bestT;
+        assetDrag.wall = w;
+        render();
         return;
       }
       if (drawing) { const p = toWorld(e); const s = snapPoint(p); drawing.x2 = s.x; drawing.y2 = s.y; render(); }
@@ -519,10 +562,10 @@ const Editor = (() => {
     document.addEventListener('keydown', e => {
       const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
       if (typing) return;
-      if ((e.key === 'Delete' || e.key === 'Backspace') && (selectedIds.size || selectedAsset)) {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && (selectedIds.size || selectedAssets.size)) {
         project.walls = project.walls.filter(w => !selectedIds.has(w.id));
-        project.assets = (project.assets || []).filter(a => a.id !== selectedAsset && !selectedIds.has(a.wallId));
-        selectedIds = new Set(); selectedAsset = null; scheduleSave(); updateDeleteBtn(); render(); pushHistory();
+        project.assets = (project.assets || []).filter(a => !selectedAssets.has(a.id) && !selectedIds.has(a.wallId));
+        selectedIds = new Set(); selectedAssets = new Set(); scheduleSave(); updateDeleteBtn(); render(); pushHistory();
       }
       if (e.key === 'Escape' && drawing) { drawing = null; render(); }
       if (e.key === 'Escape' && pendingAsset) { pendingAsset = null; render(); }
@@ -554,14 +597,25 @@ const Editor = (() => {
 
     document.getElementById('zoomReset').onclick = fitToContent;
     document.getElementById('deleteSelected').onclick = () => {
-      if (!selectedIds.size && !selectedAsset) return;
+      if (!selectedIds.size && !selectedAssets.size) return;
       project.walls = project.walls.filter(w => !selectedIds.has(w.id));
-      project.assets = (project.assets || []).filter(a => a.id !== selectedAsset && !selectedIds.has(a.wallId));
-      selectedIds = new Set(); selectedAsset = null; scheduleSave(); render(); updateDeleteBtn(); pushHistory();
+      project.assets = (project.assets || []).filter(a => !selectedAssets.has(a.id) && !selectedIds.has(a.wallId));
+      selectedIds = new Set(); selectedAssets = new Set(); scheduleSave(); render(); updateDeleteBtn(); pushHistory();
     };
-    document.getElementById('modeDoor').onclick = () => { pendingAsset = 'door'; mode = 'select'; selectedIds = new Set(); selectedAsset = null; updateDeleteBtn(); render(); };
-    document.getElementById('modeWindow').onclick = () => { pendingAsset = 'window'; mode = 'select'; selectedIds = new Set(); selectedAsset = null; updateDeleteBtn(); render(); };
     document.getElementById('assetWidth').onchange = applyAssetInspector;
+    document.getElementById('assetDir').onclick = applyAssetDir;
+    document.getElementById('assetHinge').onclick = () => {
+      const a = selectedAssets.size === 1 ? (project.assets || []).find(a => a.id === [...selectedAssets][0]) : null;
+      if (!a) return;
+      a.hinge = (a.hinge || 1) === 1 ? -1 : 1;
+      scheduleSave(); render(); pushHistory();
+    };
+    // add-asset dropdown
+    document.getElementById('addAssetBtn').onclick = () => {
+      pendingAsset = document.getElementById('addAsset').value;
+      mode = 'select'; selectedIds = new Set(); selectedAssets = new Set();
+      updateDeleteBtn(); render();
+    };
     document.getElementById('undoBtn').onclick = undo;
     document.getElementById('redoBtn').onclick = redo;
     document.getElementById('wallLen').onchange = applyInspector;
