@@ -2,7 +2,7 @@
 const Editor = (() => {
   const SVGNS = 'http://www.w3.org/2000/svg';
   let project, projectPath, svg, world, overlay;
-  let mode = 'draw';           // 'draw' | 'select'
+  let mode = 'select';         // 'draw' | 'select' | 'edit'
   let snap = true;
   let wallThickness = 15;      // cm
   let zoom = 1, panX = 0, panY = 0;
@@ -213,8 +213,12 @@ const Editor = (() => {
 
     svg.addEventListener('wheel', e => {
       e.preventDefault();
+      const r = svg.getBoundingClientRect();
+      const mx = e.clientX - r.left, my = e.clientY - r.top;
+      const wx = (mx - panX) / zoom, wy = (my - panY) / zoom;
       const f = e.deltaY < 0 ? 1.1 : 1 / 1.1;
       zoom *= f;
+      panX = mx - wx * zoom; panY = my - wy * zoom;
       applyView(); render();
     }, { passive: false });
 
@@ -234,7 +238,23 @@ const Editor = (() => {
     document.getElementById('modeSelect').onclick = () => { mode = 'select'; drawing = null; updateDeleteBtn(); render(); };
     document.getElementById('zoomIn').onclick = () => { zoom *= 1.25; applyView(); render(); };
     document.getElementById('zoomOut').onclick = () => { zoom /= 1.25; applyView(); render(); };
-    document.getElementById('zoomReset').onclick = () => { zoom = 1; panX = 0; panY = 0; applyView(); render(); };
+    function fitToContent() {
+      const r = svg.getBoundingClientRect();
+      if (!project.walls.length) { panX = r.width / 2; panY = r.height / 2; zoom = 0.5; applyView(); render(); return; }
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const w of project.walls) {
+        minX = Math.min(minX, w.x1, w.x2); maxX = Math.max(maxX, w.x1, w.x2);
+        minY = Math.min(minY, w.y1, w.y2); maxY = Math.max(maxY, w.y1, w.y2);
+      }
+      const pad = 80 / 1;
+      const bw = Math.max(maxX - minX, 1), bh = Math.max(maxY - minY, 1);
+      zoom = Math.min((r.width - 80) / bw, (r.height - 80) / bh, 2);
+      panX = (r.width - (maxX + minX) * zoom) / 2;
+      panY = (r.height - (maxY + minY) * zoom) / 2;
+      applyView(); render();
+    }
+
+    document.getElementById('zoomReset').onclick = fitToContent;
     document.getElementById('deleteSelected').onclick = () => {
       if (!selectedIds.size) return;
       project.walls = project.walls.filter(w => !selectedIds.has(w.id));
@@ -244,11 +264,8 @@ const Editor = (() => {
     document.getElementById('wallAngle').onchange = applyInspector;
     document.getElementById('wallThick').onchange = applyInspector;
 
-    // initial view: center origin
-    const r = svg.getBoundingClientRect();
-    panX = r.width / 2; panY = r.height / 2;
-    zoom = 0.5;
-    applyView(); render();
+    // initial view: fit the project's walls
+    fitToContent();
   }
 
   return { init };
