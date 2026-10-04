@@ -16,6 +16,92 @@ const Editor = (() => {
   const GRID = 25;             // cm
   const snapTo = v => v;
 
+  function endpoints(excludeId) {
+    const pts = [];
+    for (const w of project.walls) {
+      if (w.id === excludeId) continue;
+      const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
+      const l = Math.hypot(dx, dy) || 1;
+      const ux = dx / l, uy = dy / l, o = w.thickness / 2; // very edge of the square cap
+      pts.push({ x: w.x1 - ux * o, y: w.y1 - uy * o }, { x: w.x2 + ux * o, y: w.y2 + uy * o });
+    }
+    return pts;
+  }
+  function snapPoint(p, excludeId) {
+    const r = 12 / zoom;
+    let best = null, bd = r;
+    for (const q of endpoints(excludeId)) {
+      const d = Math.hypot(q.x - p.x, q.y - p.y);
+      if (d <= bd) { bd = d; best = { x: q.x, y: q.y }; }
+    }
+    for (const w of project.walls) {
+      if (w.id === excludeId) continue;
+      const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
+      const l2 = dx * dx + dy * dy; if (!l2) continue;
+      let t = ((p.x - w.x1) * dx + (p.y - w.y1) * dy) / l2;
+      t = Math.max(0, Math.min(1, t));
+      const px = w.x1 + t * dx, py = w.y1 + t * dy;
+      const d = Math.hypot(px - p.x, py - p.y);
+      if (d < bd) { bd = d; best = { x: px, y: py }; }
+    }
+    return best || { x: p.x, y: p.y };
+  }
+
+  // AutoCAD-style dimension along wall w, from joint q to its closest extremity.
+  // (dirx, diry) = direction of the connecting wall at q (used to place dim on opposite side).
+  function addConnDim(g, w, q, dirx, diry) {
+    const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
+    const len = Math.hypot(dx, dy); if (!len) return;
+    const ux = dx / len, uy = dy / len;
+    const d1 = Math.hypot(q.x - w.x1, q.y - w.y1);
+    const d2 = Math.hypot(q.x - w.x2, q.y - w.y2);
+    const end = d1 <= d2 ? { x: w.x1, y: w.y1 } : { x: w.x2, y: w.y2 };
+    const dist = Math.min(d1, d2);
+    let nx = -uy, ny = ux;
+    if (nx * dirx + ny * diry > 0) { nx = -nx; ny = -ny; }
+    const off = w.thickness / 2 + 14 / zoom;
+    const ax = q.x + nx * off, ay = q.y + ny * off;
+    const bx = end.x + nx * off, by = end.y + ny * off;
+    const g2 = el('g', { stroke: '#ffd166', 'stroke-width': 1.2 / zoom, fill: 'none' });
+    // extension lines
+    for (const p of [q, end]) {
+      g2.appendChild(el('line', {
+        x1: p.x + nx * (w.thickness / 2 + 2 / zoom), y1: p.y + ny * (w.thickness / 2 + 2 / zoom),
+        x2: p.x + nx * (off + 4 / zoom), y2: p.y + ny * (off + 4 / zoom),
+      }));
+    }
+    // dimension line
+    g2.appendChild(el('line', { x1: ax, y1: ay, x2: bx, y2: by }));
+    // arrowheads
+    const s = 7 / zoom, wd = 3 / zoom;
+    const ang = Math.atan2(by - ay, bx - ax);
+    for (const [tip, a] of [[ [ax, ay], ang ], [ [bx, by], ang + Math.PI ]]) {
+      const p1 = `${tip[0]},${tip[1]}`;
+      const b1x = tip[0] + Math.cos(a) * s + Math.cos(a + Math.PI / 2) * wd, b1y = tip[1] + Math.sin(a) * s + Math.sin(a + Math.PI / 2) * wd;
+      const b2x = tip[0] + Math.cos(a) * s - Math.cos(a + Math.PI / 2) * wd, b2y = tip[1] + Math.sin(a) * s - Math.sin(a + Math.PI / 2) * wd;
+      g2.appendChild(el('path', { d: `M${p1} L${b1x},${b1y} L${b2x},${b2y} Z`, fill: '#ffd166', stroke: 'none' }));
+    }
+    // text — same direction rules as the wall labels
+    let la;
+    const adeg = Math.atan2(uy, ux) * 180 / Math.PI;
+    if (Math.abs(adeg) > 89.5 && Math.abs(adeg) < 90.5) la = -90; // vertical: read down→up
+    else if (Math.abs(adeg) < 0.5 || Math.abs(adeg) > 179.5) la = 0; // horizontal: read L→R
+    else { la = adeg; if (la < -90) la += 180; else if (la > 90) la -= 180; }
+    const mxp = (ax + bx) / 2 + nx * 12 / zoom, myp = (ay + by) / 2 + ny * 12 / zoom;
+    const t = el('text', { x: mxp, y: myp, 'text-anchor': 'middle', fill: '#ffd166', 'font-size': 12 / zoom, stroke: 'none', transform: `rotate(${la} ${mxp} ${myp})` });
+    t.textContent = fmtLen(dist);
+    g2.appendChild(t);
+    g.appendChild(g2);
+  }
+
+  function liesOnWallInterior(w, p) {
+    const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
+    const l2 = dx * dx + dy * dy; if (!l2) return false;
+    const t = ((p.x - w.x1) * dx + (p.y - w.y1) * dy) / l2;
+    if (t <= 1e-6 || t >= 1 - 1e-6) return false;
+    return Math.hypot(w.x1 + t * dx - p.x, w.y1 + t * dy - p.y) < 1e-6;
+  }
+
   function el(tag, attrs) {
     const e = document.createElementNS(SVGNS, tag);
     for (const k in attrs) e.setAttribute(k, attrs[k]);
@@ -49,26 +135,39 @@ const Editor = (() => {
     for (const w of project.walls) {
       const grp = el('g', { 'data-id': w.id, cursor: mode === 'select' ? 'move' : mode === 'edit' ? 'pointer' : 'crosshair' });
       const selected = selectedIds.has(w.id);
+      const fill = w.fill || 'solid';
+      if (fill !== 'solid' && !selected) {
+        grp.appendChild(el('line', { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2, stroke: '#e0e0e0', 'stroke-opacity': 0.2, 'stroke-width': w.thickness, 'stroke-linecap': 'square' }));
+      }
       grp.appendChild(el('line', {
         x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2,
-        stroke: selected ? '#ffd166' : '#e0e0e0', 'stroke-width': w.thickness,
+        stroke: selected ? '#ffd166' : fill === 'solid' ? '#e0e0e0' : fill === 'dots' ? 'url(#patDots)' : 'url(#patDash)',
+        'stroke-opacity': fill === 'solid' && !selected ? 0.75 : 1,
+        'stroke-width': w.thickness,
         'stroke-linecap': 'square',
       }));
       // hit area
       grp.appendChild(el('line', { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2, stroke: 'transparent', 'stroke-width': Math.max(w.thickness, 20) }));
       // label
       const mx = (w.x1 + w.x2) / 2, my = (w.y1 + w.y2) / 2;
-      const len = wallLength(w) || 1;
-      const nx = -(w.y2 - w.y1) / len, ny = (w.x2 - w.x1) / len;
-      let la = Math.atan2(w.y2 - w.y1, w.x2 - w.x1) * 180 / Math.PI;
-      if (Math.abs(Math.sin(la * Math.PI / 180)) < 1e-6) la = 0; // horizontal: keep readable
-      else if (Math.sin(la * Math.PI / 180) > 0) la += 180;      // make text read "upwards" along the wall
       const off = w.thickness / 2 + 10 / zoom;
+      const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
+      let lx, ly, la;
+      const adeg = Math.atan2(dy, dx) * 180 / Math.PI;
+      if (Math.abs(adeg) > 89.5 && Math.abs(adeg) < 90.5) { lx = mx - off; ly = my; la = -90; }  // vertical: left side, read down→up
+      else if (Math.abs(adeg) < 0.5 || Math.abs(adeg) > 179.5) { lx = mx; ly = my - off; la = 0; } // horizontal: top, read L→R
+      else {
+        // angled wall: parallel to the wall, above the line, read left→right
+        la = adeg;
+        if (la < -90) la += 180; else if (la > 90) la -= 180;
+        const rad = la * Math.PI / 180;
+        lx = mx + Math.sin(rad) * off; ly = my - Math.cos(rad) * off;
+      }
       const t = el('text', {
-        x: mx + nx * off, y: my + ny * off, 'text-anchor': 'middle', fill: '#9ecbff', 'font-size': 14 / zoom,
-        transform: `rotate(${la} ${mx + nx * off} ${my + ny * off})`,
+        x: lx, y: ly, 'text-anchor': 'middle', fill: '#9ecbff', 'font-size': 14 / zoom,
+        transform: `rotate(${la} ${lx} ${ly})`,
       });
-      t.textContent = `${fmtLen(wallLength(w))} · ${wallAngle(w).toFixed(0)}°`;
+      t.textContent = `${fmtLen(wallLength(w))} · ${wallAngle(w).toFixed(1)}°`;
       grp.appendChild(t);
       grp.addEventListener('pointerdown', e => onWallDown(e, w));
       world.appendChild(grp);
@@ -85,20 +184,53 @@ const Editor = (() => {
         }
       }
     }
+    // persistent dimensions for T-connections (endpoint on the middle of another wall)
+    for (const a of project.walls) {
+      for (const ep of [[a.x1, a.y1], [a.x2, a.y2]]) {
+        for (const b of project.walls) {
+          if (b === a) continue;
+          if (liesOnWallInterior(b, { x: ep[0], y: ep[1] })) {
+            const ox = ep[0] === a.x1 && ep[1] === a.y1 ? a.x2 : a.x1;
+            const oy = ep[0] === a.x1 && ep[1] === a.y1 ? a.y2 : a.y1;
+            addConnDim(world, b, { x: ep[0], y: ep[1] }, ox - ep[0], oy - ep[1]);
+          }
+        }
+      }
+    }
     if (drawing) {
       overlay.innerHTML = '';
       overlay.appendChild(el('line', { x1: drawing.x1, y1: drawing.y1, x2: drawing.x2, y2: drawing.y2, stroke: '#4dabf7', 'stroke-width': wallThickness, 'stroke-linecap': 'square', 'stroke-dasharray': `${8 / zoom} ${6 / zoom}` }));
-      const dl = Math.hypot(drawing.x2 - drawing.x1, drawing.y2 - drawing.y1) || 1;
-      const dnx = -(drawing.y2 - drawing.y1) / dl, dny = (drawing.x2 - drawing.x1) / dl;
-      let da = Math.atan2(drawing.y2 - drawing.y1, drawing.x2 - drawing.x1) * 180 / Math.PI;
-      if (Math.abs(Math.sin(da * Math.PI / 180)) < 1e-6) da = 0;
-      else if (Math.sin(da * Math.PI / 180) > 0) da += 180;
-      const dmx = (drawing.x1 + drawing.x2) / 2 + dnx * (wallThickness / 2 + 10 / zoom);
-      const dmy = (drawing.y1 + drawing.y2) / 2 + dny * (wallThickness / 2 + 10 / zoom);
+      const dx = drawing.x2 - drawing.x1, dy = drawing.y2 - drawing.y1;
+      let dmx = (drawing.x1 + drawing.x2) / 2, dmy = (drawing.y1 + drawing.y2) / 2, da;
+      const doff = wallThickness / 2 + 10 / zoom;
+      const dadeg = Math.atan2(dy, dx) * 180 / Math.PI;
+      if (Math.abs(dadeg) > 89.5 && Math.abs(dadeg) < 90.5) { dmx -= doff; da = -90; }
+      else if (Math.abs(dadeg) < 0.5 || Math.abs(dadeg) > 179.5) { dmy -= doff; da = 0; }
+      else {
+        da = dadeg;
+        if (da < -90) da += 180; else if (da > 90) da -= 180;
+        const rad = da * Math.PI / 180;
+        dmx += Math.sin(rad) * doff; dmy -= Math.cos(rad) * doff;
+      }
       const t = el('text', { x: dmx, y: dmy, 'text-anchor': 'middle', fill: '#4dabf7', 'font-size': 14 / zoom, transform: `rotate(${da} ${dmx} ${dmy})` });
       t.textContent = fmtLen(Math.hypot(drawing.x2 - drawing.x1, drawing.y2 - drawing.y1));
       overlay.appendChild(t);
+      // live dimension when an end joins the middle of an existing wall
+      for (const ep of [[drawing.x1, drawing.y1], [drawing.x2, drawing.y2]]) {
+        for (const w of project.walls) {
+          if (liesOnWallInterior(w, { x: ep[0], y: ep[1] })) {
+            const ox = ep[0] === drawing.x1 && ep[1] === drawing.y1 ? drawing.x2 : drawing.x1;
+            const oy = ep[0] === drawing.x1 && ep[1] === drawing.y1 ? drawing.y2 : drawing.y1;
+            addConnDim(overlay, w, { x: ep[0], y: ep[1] }, ox - ep[0], oy - ep[1]);
+          }
+        }
+      }
     } else overlay.innerHTML = '';
+    if (mode === 'draw') {
+      for (const q of endpoints()) {
+        overlay.appendChild(el('circle', { cx: q.x, cy: q.y, r: 5 / zoom, fill: '#4dabf7', stroke: '#111', 'stroke-width': 1.5 / zoom }));
+      }
+    }
     updateInspector();
   }
 
@@ -148,9 +280,17 @@ const Editor = (() => {
     const box = document.getElementById('inspector');
     if (!w || mode !== 'edit') { box.classList.add('d-none'); box.classList.remove('d-flex'); return; }
     box.classList.remove('d-none'); box.classList.add('d-flex');
-    document.getElementById('wallLen').value = wallLength(w).toFixed(0);
-    document.getElementById('wallAngle').value = wallAngle(w).toFixed(0);
+    document.getElementById('wallLen').value = wallLength(w).toFixed(1);
+    document.getElementById('wallAngle').value = wallAngle(w).toFixed(1);
     document.getElementById('wallThick').value = w.thickness;
+    document.getElementById('wallFill').value = w.fill || 'solid';
+  }
+
+  function applyFill() {
+    const w = project.walls.find(w => w.id === onlySelected());
+    if (!w) return;
+    w.fill = document.getElementById('wallFill').value;
+    scheduleSave(); render();
   }
 
   function scheduleSave() {
@@ -169,9 +309,11 @@ const Editor = (() => {
       const p = toWorld(e);
       if (mode === 'draw') {
         if (!drawing) {
-          drawing = { x1: snapTo(p.x), y1: snapTo(p.y), x2: snapTo(p.x), y2: snapTo(p.y) };
+          const s = snapPoint(p);
+          drawing = { x1: s.x, y1: s.y, x2: s.x, y2: s.y };
         } else {
-          drawing.x2 = snapTo(p.x); drawing.y2 = snapTo(p.y);
+          const s = snapPoint(p);
+          drawing.x2 = s.x; drawing.y2 = s.y;
           if (wallLength(drawing) > 0) {
             project.walls.push({ id: crypto.randomUUID(), x1: drawing.x1, y1: drawing.y1, x2: drawing.x2, y2: drawing.y2, thickness: wallThickness });
             scheduleSave();
@@ -190,19 +332,26 @@ const Editor = (() => {
       if (panning) { panX = panning.panX + (e.clientX - panning.x); panY = panning.panY + (e.clientY - panning.y); applyView(); return; }
       if (dragging) {
         const p = toWorld(e);
-        const ddx = snapTo(p.x) - snapTo(dragging.ox);
-        const ddy = snapTo(p.y) - snapTo(dragging.oy);
+        let ddx = snapTo(p.x) - snapTo(dragging.ox);
+        let ddy = snapTo(p.y) - snapTo(dragging.oy);
+        // snap dragged wall endpoints onto other walls (endpoints or middle) for exact connections
+        const r = 12 / zoom;
+        outer: for (const c of [{ x: dragging.x1 + ddx, y: dragging.y1 + ddy }, { x: dragging.x2 + ddx, y: dragging.y2 + ddy }]) {
+          const s = snapPoint(c, dragging.wall.id);
+          const dd = Math.hypot(s.x - c.x, s.y - c.y);
+          if (dd > 0 && dd <= r) { ddx += s.x - c.x; ddy += s.y - c.y; break outer; }
+        }
         dragging.wall.x1 = dragging.x1 + ddx; dragging.wall.y1 = dragging.y1 + ddy;
         dragging.wall.x2 = dragging.x2 + ddx; dragging.wall.y2 = dragging.y2 + ddy;
         render(); return;
       }
       if (endpointDrag) {
-        const p = toWorld(e);
-        if (endpointDrag.end === 'p1') { endpointDrag.wall.x1 = snapTo(p.x); endpointDrag.wall.y1 = snapTo(p.y); }
-        else { endpointDrag.wall.x2 = snapTo(p.x); endpointDrag.wall.y2 = snapTo(p.y); }
+        const p = toWorld(e); const s = snapPoint(p, endpointDrag.wall.id);
+        if (endpointDrag.end === 'p1') { endpointDrag.wall.x1 = s.x; endpointDrag.wall.y1 = s.y; }
+        else { endpointDrag.wall.x2 = s.x; endpointDrag.wall.y2 = s.y; }
         render(); return;
       }
-      if (drawing) { const p = toWorld(e); drawing.x2 = snapTo(p.x); drawing.y2 = snapTo(p.y); render(); }
+      if (drawing) { const p = toWorld(e); const s = snapPoint(p); drawing.x2 = s.x; drawing.y2 = s.y; render(); }
     });
 
     svg.addEventListener('pointerup', e => {
@@ -263,6 +412,7 @@ const Editor = (() => {
     document.getElementById('wallLen').onchange = applyInspector;
     document.getElementById('wallAngle').onchange = applyInspector;
     document.getElementById('wallThick').onchange = applyInspector;
+    document.getElementById('wallFill').onchange = applyFill;
 
     // initial view: fit the project's walls
     fitToContent();

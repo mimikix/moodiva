@@ -27,13 +27,28 @@
 
     <div id="inspector" class="d-none align-items-center gap-2 mb-2 small">
       <strong>Selected wall:</strong>
-      <label>Length (cm) <input id="wallLen" type="number" step="1" min="5" style="width:90px" class="form-control form-control-sm d-inline-block" /></label>
-      <label>Angle (°) <input id="wallAngle" type="number" step="1" style="width:80px" class="form-control form-control-sm d-inline-block" /></label>
-      <label>Thickness (cm) <input id="wallThick" type="number" step="1" min="5" max="60" style="width:70px" class="form-control form-control-sm d-inline-block" /></label>
+      <label>Length (cm) <input id="wallLen" type="number" step="any" min="5" style="width:90px" class="form-control form-control-sm d-inline-block" /></label>
+      <label>Angle (°) <input id="wallAngle" type="number" step="any" style="width:80px" class="form-control form-control-sm d-inline-block" /></label>
+      <label>Thickness (cm) <input id="wallThick" type="number" step="any" min="5" max="60" style="width:70px" class="form-control form-control-sm d-inline-block" /></label>
+      <label>Fill <select id="wallFill" class="form-select form-select-sm d-inline-block" style="width:140px">
+        <option value="solid">Opaque</option>
+        <option value="dots">Dots</option>
+        <option value="dash">Diagonal dashes</option>
+      </select></label>
       <span class="text-muted">(length anchored at wall start, angle measured from +X axis)</span>
     </div>
 
     <svg id="plan" style="width:100%; height:78vh; background:#111; border-radius:8px; touch-action:none;">
+      <defs>
+        <pattern id="patDots" width="7" height="7" patternUnits="userSpaceOnUse">
+          <rect width="7" height="7" fill="rgba(224,224,224,0.14)" />
+          <circle cx="3.5" cy="3.5" r="1.6" fill="#e0e0e0" />
+        </pattern>
+        <pattern id="patDash" width="8" height="8" patternUnits="userSpaceOnUse">
+          <rect width="8" height="8" fill="rgba(224,224,224,0.14)" />
+          <path d="M-2,2 L2,-2 M0,8 L8,0 M6,10 L10,6" stroke="#e0e0e0" stroke-width="1.4" />
+        </pattern>
+      </defs>
       <g id="world"></g>
       <g id="overlay"></g>
     </svg>
