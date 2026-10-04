@@ -16,8 +16,12 @@
       <button id="modeDraw" class="btn btn-primary btn-sm">Draw wall</button>
       <button id="modeEdit" class="btn btn-outline-warning btn-sm">Edit</button>
       <button id="deleteSelected" class="btn btn-danger btn-sm" disabled>Delete</button>
+      <button id="undoBtn" class="btn btn-outline-secondary btn-sm" disabled>↶ Undo</button>
+      <button id="redoBtn" class="btn btn-outline-secondary btn-sm" disabled>↷ Redo</button>
       <button id="modeSelect" class="btn btn-outline-light btn-sm">Select / move</button>
-      <span class="text-muted small">Shift+drag or middle-drag to pan · wheel to zoom · Delete removes selected · Esc cancels</span>
+      <button id="modeDoor" class="btn btn-outline-info btn-sm">+ Door</button>
+      <button id="modeWindow" class="btn btn-outline-info btn-sm">+ Window</button>
+      <span class="text-muted small">Shift+drag or middle-drag to pan · wheel to zoom · Delete removes selected · Esc cancels · Ctrl+Z / Ctrl+Y undo/redo · click a wall to place a door/window</span>
       <span class="ms-auto d-flex gap-2 align-items-center">
         <button id="zoomIn" class="btn btn-outline-light btn-sm">+</button>
         <button id="zoomOut" class="btn btn-outline-light btn-sm">−</button>
@@ -36,6 +40,12 @@
         <option value="dash">Diagonal dashes</option>
       </select></label>
       <span class="text-muted">(length anchored at wall start, angle measured from +X axis)</span>
+    </div>
+
+    <div id="assetInspector" class="d-none align-items-center gap-2 mb-2 small">
+      <strong>Selected <span id="assetType">asset</span>:</strong>
+      <label>Width (cm) <input id="assetWidth" type="number" step="any" min="5" style="width:90px" class="form-control form-control-sm d-inline-block" /></label>
+      <span class="text-muted">(drag to slide along the wall)</span>
     </div>
 
     <svg id="plan" style="width:100%; height:78vh; background:#111; border-radius:8px; touch-action:none;">

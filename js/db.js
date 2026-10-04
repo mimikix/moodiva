@@ -12,6 +12,7 @@ const DB = (() => {
       updatedAt: new Date().toISOString(),
       walls: [],
       placedFurniture: [],
+      assets: [],
     };
   }
   return {
