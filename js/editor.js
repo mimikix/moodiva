@@ -80,16 +80,14 @@ const Editor = (() => {
     const pts = [];
     for (const w of project.walls) {
       if (ex.has(w.id)) continue;
-      const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
-      const l = Math.hypot(dx, dy) || 1;
-      const ux = dx / l, uy = dy / l;
-      const o1 = endConnected(w, 'p1') ? w.thickness / 2 : 0; // very edge of the square cap
-      const o2 = endConnected(w, 'p2') ? w.thickness / 2 : 0;
-      pts.push({ x: w.x1 - ux * o1, y: w.y1 - uy * o1 }, { x: w.x2 + ux * o2, y: w.y2 + uy * o2 });
+      pts.push({ x: w.x1, y: w.y1 }, { x: w.x2, y: w.y2 });
     }
     return pts;
   }
-  function snapPoint(p, excludeId) {
+  // When an endpoint lands on the middle of an existing wall (T-junction),
+  // snap it to the wall's nearest face line, not its centerline, so the new
+  // wall's end corners meet the extremity line of the existing wall.
+  function snapPoint(p, excludeId, other, thick) {
     const ex = excludeId instanceof Set ? excludeId : new Set(excludeId ? [excludeId] : []);
     const r = 12 / zoom;
     let best = null, bd = r;
@@ -97,15 +95,35 @@ const Editor = (() => {
       const d = Math.hypot(q.x - p.x, q.y - p.y);
       if (d <= bd) { bd = d; best = { x: q.x, y: q.y }; }
     }
+    // Corner-to-corner snap always wins; the face-line snap below only
+    // applies when no corner is within range.
+    if (best) return best;
     for (const w of project.walls) {
       if (ex.has(w.id)) continue;
       const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
       const l2 = dx * dx + dy * dy; if (!l2) continue;
       let t = ((p.x - w.x1) * dx + (p.y - w.y1) * dy) / l2;
-      t = Math.max(0, Math.min(1, t));
+      const l = Math.sqrt(l2);
+      // interior only — skip the corner zones so corners snap to corners
+      if (t < 0 || t > 1 || t * l < w.thickness / 2 || (1 - t) * l < w.thickness / 2) continue;
       const px = w.x1 + t * dx, py = w.y1 + t * dy;
-      const d = Math.hypot(px - p.x, py - p.y);
-      if (d < bd) { bd = d; best = { x: px, y: py }; }
+      let nx = -dy / l, ny = dx / l;
+      // offset toward the side the new wall comes from
+      const ref = other || p;
+      if ((ref.x - px) * nx + (ref.y - py) * ny < 0) { nx = -nx; ny = -ny; }
+      let fx = px + nx * w.thickness / 2, fy = py + ny * w.thickness / 2;
+      // Parallel (stacked) case: lay the new wall flush on the existing
+      // wall's extremity line — push the endpoint out by half the new
+      // wall's thickness so its edge, and thus its end corners, sit exactly
+      // on that line.
+      if (other && thick) {
+        const vx = p.x - other.x, vy = p.y - other.y, vl = Math.hypot(vx, vy);
+        if (vl > 1e-6 && Math.abs((vx * dx + vy * dy) / (vl * l)) > 0.9) {
+          fx += nx * thick / 2; fy += ny * thick / 2;
+        }
+      }
+      const df = Math.hypot(fx - p.x, fy - p.y);
+      if (df < bd) { bd = df; best = { x: fx, y: fy }; }
     }
     return best || { x: p.x, y: p.y };
   }
@@ -163,6 +181,18 @@ const Editor = (() => {
     const t = ((p.x - w.x1) * dx + (p.y - w.y1) * dy) / l2;
     if (t <= 1e-6 || t >= 1 - 1e-6) return false;
     return Math.hypot(w.x1 + t * dx - p.x, w.y1 + t * dy - p.y) < 1e-6;
+  }
+
+  // True when p sits strictly inside w's body line OR exactly on either of
+  // w's face (extremity) lines — the two ways a T-junction endpoint can
+  // touch another wall.
+  function liesOnWallJoint(w, p) {
+    const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
+    const l2 = dx * dx + dy * dy; if (!l2) return false;
+    const t = ((p.x - w.x1) * dx + (p.y - w.y1) * dy) / l2;
+    if (t <= 1e-6 || t >= 1 - 1e-6) return false;
+    const d = Math.hypot(w.x1 + t * dx - p.x, w.y1 + t * dy - p.y);
+    return d < 1e-6 || Math.abs(d - w.thickness / 2) < 1e-6;
   }
 
   function el(tag, attrs) {
@@ -325,7 +355,7 @@ const Editor = (() => {
       for (const ep of [[a.x1, a.y1], [a.x2, a.y2]]) {
         for (const b of project.walls) {
           if (b === a) continue;
-          if (liesOnWallInterior(b, { x: ep[0], y: ep[1] })) {
+          if (liesOnWallJoint(b, { x: ep[0], y: ep[1] })) {
             const ox = ep[0] === a.x1 && ep[1] === a.y1 ? a.x2 : a.x1;
             const oy = ep[0] === a.x1 && ep[1] === a.y1 ? a.y2 : a.y1;
             addConnDim(world, b, { x: ep[0], y: ep[1] }, ox - ep[0], oy - ep[1]);
@@ -355,7 +385,7 @@ const Editor = (() => {
       // live dimension when an end joins the middle of an existing wall
       for (const ep of [[drawing.x1, drawing.y1], [drawing.x2, drawing.y2]]) {
         for (const w of project.walls) {
-          if (liesOnWallInterior(w, { x: ep[0], y: ep[1] })) {
+          if (liesOnWallJoint(w, { x: ep[0], y: ep[1] })) {
             const ox = ep[0] === drawing.x1 && ep[1] === drawing.y1 ? drawing.x2 : drawing.x1;
             const oy = ep[0] === drawing.x1 && ep[1] === drawing.y1 ? drawing.y2 : drawing.y1;
             addConnDim(overlay, w, { x: ep[0], y: ep[1] }, ox - ep[0], oy - ep[1]);
@@ -487,14 +517,17 @@ const Editor = (() => {
   }
 
   function applyInspector() {
-    const w = project.walls.find(w => w.id === onlySelected());
-    if (!w) return;
-    const lenCm = Math.max(5, parseFloat(document.getElementById('wallLen').value) || 0);
-    const ang = (parseFloat(document.getElementById('wallAngle').value) || 0) * Math.PI / 180;
     const thick = parseFloat(document.getElementById('wallThick').value);
-    w.x2 = w.x1 + Math.cos(ang) * lenCm;
-    w.y2 = w.y1 + Math.sin(ang) * lenCm;
-    if (thick) w.thickness = Math.min(60, Math.max(5, thick));
+    const walls = project.walls.filter(w => selectedIds.has(w.id));
+    if (!walls.length) return;
+    if (walls.length === 1) {
+      const w = walls[0];
+      const lenCm = Math.max(5, parseFloat(document.getElementById('wallLen').value) || 0);
+      const ang = (parseFloat(document.getElementById('wallAngle').value) || 0) * Math.PI / 180;
+      w.x2 = w.x1 + Math.cos(ang) * lenCm;
+      w.y2 = w.y1 + Math.sin(ang) * lenCm;
+    }
+    if (thick) for (const w of walls) w.thickness = Math.min(60, Math.max(5, thick));
     scheduleSave(); render(); updateInspector(); pushHistory();
   }
 
@@ -527,21 +560,33 @@ const Editor = (() => {
   }
 
   function updateInspector() {
-    const w = project.walls.find(w => w.id === onlySelected());
+    const walls = project.walls.filter(w => selectedIds.has(w.id));
+    const w = walls.length === 1 ? walls[0] : null;
     const box = document.getElementById('inspector');
     updateAssetInspector();
-    if (!w || mode !== 'edit') { box.classList.add('d-none'); box.classList.remove('d-flex'); return; }
+    if (!walls.length || mode !== 'edit') { box.classList.add('d-none'); box.classList.remove('d-flex'); return; }
     box.classList.remove('d-none'); box.classList.add('d-flex');
-    document.getElementById('wallLen').value = wallLength(w).toFixed(1);
-    document.getElementById('wallAngle').value = wallAngle(w).toFixed(1);
-    document.getElementById('wallThick').value = w.thickness;
-    document.getElementById('wallFill').value = w.fill || 'solid';
+    box.querySelector('strong').textContent = walls.length > 1 ? `Selected walls: ${walls.length}` : 'Selected wall:';
+    document.getElementById('wallLen').disabled = !w;
+    document.getElementById('wallAngle').disabled = !w;
+    if (w) {
+      document.getElementById('wallLen').value = wallLength(w).toFixed(1);
+      document.getElementById('wallAngle').value = wallAngle(w).toFixed(1);
+    } else {
+      document.getElementById('wallLen').value = '';
+      document.getElementById('wallAngle').value = '';
+    }
+    // show common thickness/fill when uniform, else blank for thickness
+    const th = walls[0].thickness;
+    document.getElementById('wallThick').value = walls.every(x => x.thickness === th) ? th : '';
+    const f = walls[0].fill || 'solid';
+    document.getElementById('wallFill').value = walls.every(x => (x.fill || 'solid') === f) ? f : document.getElementById('wallFill').value;
   }
 
   function applyFill() {
-    const w = project.walls.find(w => w.id === onlySelected());
-    if (!w) return;
-    w.fill = document.getElementById('wallFill').value;
+    const walls = project.walls.filter(w => selectedIds.has(w.id));
+    if (!walls.length) return;
+    for (const w of walls) w.fill = document.getElementById('wallFill').value;
     scheduleSave(); render(); pushHistory();
   }
 
@@ -611,8 +656,13 @@ const Editor = (() => {
           const s = snapPoint(p);
           drawing = { x1: s.x, y1: s.y, x2: s.x, y2: s.y };
         } else {
-          const s = snapPoint(p);
+          const s = snapPoint(p, null, { x: drawing.x1, y: drawing.y1 }, wallThickness);
           drawing.x2 = s.x; drawing.y2 = s.y;
+          // keep the wall axis straight: if the start was snapped onto a face
+          // and the wall runs parallel to it, the start must be flush too,
+          // otherwise the wall would tilt toward the flush end
+          const s0 = snapPoint({ x: drawing.x1, y: drawing.y1 }, null, { x: s.x, y: s.y }, wallThickness);
+          drawing.x1 = s0.x; drawing.y1 = s0.y;
           if (wallLength(drawing) > 0) {
             project.walls.push({ id: crypto.randomUUID(), x1: drawing.x1, y1: drawing.y1, x2: drawing.x2, y2: drawing.y2, thickness: wallThickness });
             scheduleSave(); pushHistory();
@@ -656,7 +706,8 @@ const Editor = (() => {
         const selIds = new Set(dragWalls.map(d => d.wall.id));
         outer: for (const d of dragWalls) {
           for (const c of [{ x: d.x1 + ddx, y: d.y1 + ddy }, { x: d.x2 + ddx, y: d.y2 + ddy }]) {
-            const s = snapPoint(c, selIds);
+            const other = c.x === d.x1 + ddx && c.y === d.y1 + ddy ? { x: d.x2 + ddx, y: d.y2 + ddy } : { x: d.x1 + ddx, y: d.y1 + ddy };
+            const s = snapPoint(c, selIds, other, d.wall.thickness);
             const dd = Math.hypot(s.x - c.x, s.y - c.y);
             if (dd > 0 && dd <= r) { ddx += s.x - c.x; ddy += s.y - c.y; break outer; }
           }
@@ -668,9 +719,12 @@ const Editor = (() => {
         render(); return;
       }
       if (endpointDrag) {
-        const p = toWorld(e); const s = snapPoint(p, endpointDrag.wall.id);
-        if (endpointDrag.end === 'p1') { endpointDrag.wall.x1 = s.x; endpointDrag.wall.y1 = s.y; }
-        else { endpointDrag.wall.x2 = s.x; endpointDrag.wall.y2 = s.y; }
+        const p = toWorld(e);
+        const w = endpointDrag.wall;
+        const other = endpointDrag.end === 'p1' ? { x: w.x2, y: w.y2 } : { x: w.x1, y: w.y1 };
+        const s = snapPoint(p, endpointDrag.wall.id, other, w.thickness);
+        if (endpointDrag.end === 'p1') { w.x1 = s.x; w.y1 = s.y; }
+        else { w.x2 = s.x; w.y2 = s.y; }
         render(); return;
       }
       if (assetDrag) {
@@ -697,7 +751,7 @@ const Editor = (() => {
         render();
         return;
       }
-      if (drawing) { const p = toWorld(e); const s = snapPoint(p); drawing.x2 = s.x; drawing.y2 = s.y; render(); }
+      if (drawing) { const p = toWorld(e); const s = snapPoint(p, null, { x: drawing.x1, y: drawing.y1 }, wallThickness); drawing.x2 = s.x; drawing.y2 = s.y; const s0 = snapPoint({ x: drawing.x1, y: drawing.y1 }, null, { x: s.x, y: s.y }, wallThickness); drawing.x1 = s0.x; drawing.y1 = s0.y; render(); }
     });
 
     svg.addEventListener('pointerup', e => {
