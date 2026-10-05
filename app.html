@@ -19,11 +19,7 @@
       <button id="modeEdit" class="btn btn-outline-warning btn-sm">Edit</button>
       <button id="deleteSelected" class="btn btn-danger btn-sm" disabled>Delete</button>
       <button id="modeSelect" class="btn btn-outline-light btn-sm">Select / move</button>
-      <select id="addAsset" class="form-select form-select-sm" style="width:120px">
-        <option value="door" selected>Door</option>
-        <option value="window">Window</option>
-      </select>
-      <button id="addAssetBtn" class="btn btn-outline-info btn-sm">Add</button>
+      <button id="addBtn" class="btn btn-outline-info btn-sm">Add…</button>
       <button id="importBg" class="btn btn-outline-light btn-sm" title="Import a picture of a floor plan as the editor background">Import plan image</button>
       <button id="calibrateBg" class="btn btn-outline-light btn-sm" disabled title="Click two points a known real distance apart">Calibrate scale</button>
       <button id="detectWalls" class="btn btn-outline-light btn-sm" disabled title="Auto-detect walls from the imported image">Detect walls</button>
@@ -73,6 +69,40 @@
       <g id="overlay"></g>
     </svg>
   </main>
+
+  <div class="modal fade" id="addModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content bg-dark text-light">
+        <div class="modal-header">
+          <h5 class="modal-title">Add</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body d-flex flex-column gap-3">
+          <div>
+            <h6 class="mb-2">Room</h6>
+            <div class="d-flex gap-2 align-items-center">
+              <select id="roomShape" class="form-select form-select-sm" style="width:130px">
+                <option value="square" selected>Square</option>
+                <option value="rectangle">Rectangle</option>
+              </select>
+              <input id="roomArea" type="number" step="any" min="1" placeholder="Area (m²)" style="width:120px" class="form-control form-control-sm" />
+              <button id="addRoomBtn" class="btn btn-outline-success btn-sm">Add room</button>
+            </div>
+          </div>
+          <div>
+            <h6 class="mb-2">Openings</h6>
+            <div class="d-flex gap-2">
+              <button id="addDoorBtn" class="btn btn-outline-info btn-sm">Add door</button>
+              <button id="addWindowBtn" class="btn btn-outline-info btn-sm">Add window</button>
+            </div>
+            <div class="text-muted small mt-1">Then click a wall to place it.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="js/storage.js"></script>
   <script src="js/db.js"></script>
   <script src="js/editor.js"></script>
