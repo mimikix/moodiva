@@ -76,9 +76,10 @@ const Editor = (() => {
   }
 
   function endpoints(excludeId) {
+    const ex = excludeId instanceof Set ? excludeId : new Set(excludeId ? [excludeId] : []);
     const pts = [];
     for (const w of project.walls) {
-      if (w.id === excludeId) continue;
+      if (ex.has(w.id)) continue;
       const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
       const l = Math.hypot(dx, dy) || 1;
       const ux = dx / l, uy = dy / l;
@@ -89,14 +90,15 @@ const Editor = (() => {
     return pts;
   }
   function snapPoint(p, excludeId) {
+    const ex = excludeId instanceof Set ? excludeId : new Set(excludeId ? [excludeId] : []);
     const r = 12 / zoom;
     let best = null, bd = r;
-    for (const q of endpoints(excludeId)) {
+    for (const q of endpoints(ex)) {
       const d = Math.hypot(q.x - p.x, q.y - p.y);
       if (d <= bd) { bd = d; best = { x: q.x, y: q.y }; }
     }
     for (const w of project.walls) {
-      if (w.id === excludeId) continue;
+      if (ex.has(w.id)) continue;
       const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
       const l2 = dx * dx + dy * dy; if (!l2) continue;
       let t = ((p.x - w.x1) * dx + (p.y - w.y1) * dy) / l2;
@@ -430,11 +432,19 @@ const Editor = (() => {
       return;
     }
     selectedAssets = new Set();
-    selectedIds = new Set([w.id]);
+    const p = toWorld(e);
+    if (selectedIds.has(w.id) && selectedIds.size > 1) {
+      // keep the multi-selection: drag moves all selected walls together;
+      // a plain click (no move) collapses the selection to this wall below.
+      const group = project.walls.filter(x => selectedIds.has(x.id))
+        .map(x => ({ wall: x, x1: x.x1, y1: x.y1, x2: x.x2, y2: x.y2 }));
+      dragging = { wall: w, walls: group, ox: p.x, oy: p.y, x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2, wasMulti: true, moved: false };
+    } else {
+      selectedIds = new Set([w.id]);
+      dragging = { wall: w, ox: p.x, oy: p.y, x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2, moved: false };
+    }
     // single click on a wall switches to select/move and starts a drag
     mode = 'select';
-    const p = toWorld(e);
-    dragging = { wall: w, ox: p.x, oy: p.y, x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 };
     svg.setPointerCapture(e.pointerId);
     updateDeleteBtn();
     render();
@@ -639,15 +649,22 @@ const Editor = (() => {
         const p = toWorld(e);
         let ddx = snapTo(p.x) - snapTo(dragging.ox);
         let ddy = snapTo(p.y) - snapTo(dragging.oy);
+        if (Math.abs(ddx) > 1 / zoom || Math.abs(ddy) > 1 / zoom) dragging.moved = true;
         // snap dragged wall endpoints onto other walls (endpoints or middle) for exact connections
         const r = 12 / zoom;
-        outer: for (const c of [{ x: dragging.x1 + ddx, y: dragging.y1 + ddy }, { x: dragging.x2 + ddx, y: dragging.y2 + ddy }]) {
-          const s = snapPoint(c, dragging.wall.id);
-          const dd = Math.hypot(s.x - c.x, s.y - c.y);
-          if (dd > 0 && dd <= r) { ddx += s.x - c.x; ddy += s.y - c.y; break outer; }
+        const dragWalls = dragging.walls || [{ wall: dragging.wall, x1: dragging.x1, y1: dragging.y1, x2: dragging.x2, y2: dragging.y2 }];
+        const selIds = new Set(dragWalls.map(d => d.wall.id));
+        outer: for (const d of dragWalls) {
+          for (const c of [{ x: d.x1 + ddx, y: d.y1 + ddy }, { x: d.x2 + ddx, y: d.y2 + ddy }]) {
+            const s = snapPoint(c, selIds);
+            const dd = Math.hypot(s.x - c.x, s.y - c.y);
+            if (dd > 0 && dd <= r) { ddx += s.x - c.x; ddy += s.y - c.y; break outer; }
+          }
         }
-        dragging.wall.x1 = dragging.x1 + ddx; dragging.wall.y1 = dragging.y1 + ddy;
-        dragging.wall.x2 = dragging.x2 + ddx; dragging.wall.y2 = dragging.y2 + ddy;
+        for (const d of dragWalls) {
+          d.wall.x1 = d.x1 + ddx; d.wall.y1 = d.y1 + ddy;
+          d.wall.x2 = d.x2 + ddx; d.wall.y2 = d.y2 + ddy;
+        }
         render(); return;
       }
       if (endpointDrag) {
@@ -714,7 +731,14 @@ const Editor = (() => {
         marquee = null;
         updateDeleteBtn(); render();
       }
-      if (dragging) { scheduleSave(); pushHistory(); dragging = null; }
+      if (dragging) {
+        if (dragging.wasMulti && !dragging.moved) {
+          // plain click on a selected wall: collapse selection to just this wall
+          selectedIds = new Set([dragging.wall.id]);
+          updateDeleteBtn(); render();
+        } else { scheduleSave(); pushHistory(); }
+        dragging = null;
+      }
       if (endpointDrag) { scheduleSave(); pushHistory(); endpointDrag = null; }
       if (assetDrag) { scheduleSave(); pushHistory(); assetDrag = null; }
     });
@@ -797,14 +821,13 @@ const Editor = (() => {
       scheduleSave(); pushHistory(); updateBgButtons(); render();
     };
 
-    // Detect walls in an architectural floor plan:
-    // thick, continuous, often double-lined dark lines forming room boundaries.
-    // The white interiors between the parallel face lines are flooded (gap fill),
-    // producing solid filled wall-thickness regions; thin markings (room labels,
-    // dimension lines, notes) are discarded by the thickness filter.
+    // Detect walls in an architectural floor plan.
+    // Walls are thick continuous bands (solid or double parallel lines, often
+    // hatched). Thin markings (dimension lines, numbers, room names, notes)
+    // are rejected by the thickness filter. Measurements are NOT walls.
     document.getElementById('detectWalls').onclick = async () => {
       if (!project.bgImage || !bgSize.w) return;
-      const s = project.bgScale || 1;
+      const s = project.bgScale || (1200 / bgSize.w);
       const img = new Image();
       img.src = project.bgImage;
       try { await img.decode(); } catch { await new Promise(r => img.onload = r); }
@@ -814,61 +837,58 @@ const Editor = (() => {
       cx.drawImage(img, 0, 0);
       const d = cx.getImageData(0, 0, W, H).data;
       const dark = new Uint8Array(W * H);
-      for (let i = 0; i < W * H; i++) dark[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3 < 128 ? 1 : 0;
+      for (let i = 0; i < W * H; i++) dark[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3 < 160 ? 1 : 0;
       const toWorldX = px => (project.bgX || 0) + px * s;
       const toWorldY = py => (project.bgY || 0) + py * s;
 
-      // ---- wall mask: solid filled regions over the entire wall thickness.
-      // Works for both solid black walls and double-lined (parallel face lines) walls:
-      // for each row/column, short white gaps between two dark runs are flooded,
-      // so the interior between the face lines becomes solid.
-      const maxGap = Math.max(8, Math.round(45 / s)); // px — interior gaps up to ~45 cm get filled
-      const maskH = new Uint8Array(dark);
+      // 1) Solid wall mask: flood white gaps between the two face lines of a wall
+      //    (covers double-lined, single thick, and hatched wall styles).
+      const maxGap = 28; // px — max interior gap between the two boundary lines
+      const maskH = new Uint8Array(dark), maskV = new Uint8Array(dark);
       for (let y = 0; y < H; y++) {
-        let x = 0, prevEnd = -1;
+        let x = 0, prev = -1;
         while (x < W) {
           if (dark[y * W + x]) {
             let q = x; while (q + 1 < W && dark[y * W + q + 1]) q++;
-            if (prevEnd >= 0 && x - prevEnd - 1 <= maxGap) for (let k = prevEnd + 1; k < x; k++) maskH[y * W + k] = 1;
-            prevEnd = q; x = q + 1;
+            if (prev >= 0 && x - prev - 1 <= maxGap) for (let k = prev + 1; k < x; k++) maskH[y * W + k] = 1;
+            prev = q; x = q + 1;
           } else x++;
         }
       }
-      const maskV = new Uint8Array(dark);
       for (let x = 0; x < W; x++) {
-        let y = 0, prevEnd = -1;
+        let y = 0, prev = -1;
         while (y < H) {
           if (dark[y * W + x]) {
             let q = y; while (q + 1 < H && dark[(q + 1) * W + x]) q++;
-            if (prevEnd >= 0 && y - prevEnd - 1 <= maxGap) for (let k = prevEnd + 1; k < y; k++) maskV[k * W + x] = 1;
-            prevEnd = q; y = q + 1;
+            if (prev >= 0 && y - prev - 1 <= maxGap) for (let k = prev + 1; k < y; k++) maskV[k * W + x] = 1;
+            prev = q; y = q + 1;
           } else y++;
         }
       }
       const wallMask = new Uint8Array(W * H);
       for (let i = 0; i < W * H; i++) wallMask[i] = (maskH[i] || maskV[i]) ? 1 : 0;
 
-      // ---- wall centerlines from the solid mask (H/V run clustering)
-      const minRun = Math.max(10, Math.round(Math.min(W, H) * 0.015));
-      function runsAlong(horizontal, mask) {
+      // 2) Wall centerlines from the mask (H/V run clustering).
+      function runsAlong(horizontal, mask, minLenPx) {
         const cands = [];
         const L = horizontal ? W : H;
         for (let a = 0; a < (horizontal ? H : W); a++) {
           let p = 0;
           while (p < L) {
             const v = horizontal ? mask[a * W + p] : mask[p * W + a];
-            if (v) { let q = p; while (q + 1 < L && (horizontal ? mask[a * W + q + 1] : mask[(q + 1) * W + a])) q++; if (q - p + 1 >= minRun) cands.push(horizontal ? { x1: p, x2: q, y: a } : { y1: p, y2: q, x: a }); p = q + 1; }
+            if (v) { let q = p; while (q + 1 < L && (horizontal ? mask[a * W + q + 1] : mask[(q + 1) * W + a])) q++; if (q - p + 1 >= minLenPx) cands.push(horizontal ? { x1: p, x2: q, y: a } : { y1: p, y2: q, x: a }); p = q + 1; }
             else p++;
           }
         }
         return cands;
       }
+      const minLenPx = Math.max(12, Math.round(Math.min(W, H) * 0.012));
       function cluster(cands, horizontal) {
         const groups = [];
         for (const c of cands) {
           const g = groups.find(g => horizontal
-            ? Math.abs(g.y - c.y) <= 4 && c.x1 <= g.x2 && c.x2 >= g.x1
-            : Math.abs(g.x - c.x) <= 4 && c.y1 <= g.y2 && c.y2 >= g.y1);
+            ? Math.abs(g.y - c.y) <= 5 && c.x1 <= g.x2 && c.x2 >= g.x1
+            : Math.abs(g.x - c.x) <= 5 && c.y1 <= g.y2 && c.y2 >= g.y1);
           if (g) {
             if (horizontal) { g.x1 = Math.min(g.x1, c.x1); g.x2 = Math.max(g.x2, c.x2); g.ys.push(c.y); g.y = g.ys.reduce((a, b) => a + b, 0) / g.ys.length; }
             else { g.y1 = Math.min(g.y1, c.y1); g.y2 = Math.max(g.y2, c.y2); g.xs.push(c.x); g.x = g.xs.reduce((a, b) => a + b, 0) / g.xs.length; }
@@ -876,181 +896,29 @@ const Editor = (() => {
         }
         return groups;
       }
-      const hGroups = cluster(runsAlong(true, wallMask), true);
-      const vGroups = cluster(runsAlong(false, wallMask), false);
+      const hGroups = cluster(runsAlong(true, wallMask, minLenPx), true);
+      const vGroups = cluster(runsAlong(false, wallMask, minLenPx), false);
       const newWalls = [];
-      const wallClusters = []; // keep per-cluster profile info for windows/doors
+      const MIN_THK_PX = 5; // thin lines (dimensions, text, arcs) are rejected
       for (const g of hGroups) {
         const thickPx = g.ys.length;
-        const thickCm = thickPx * s;
-        if ((g.x2 - g.x1) * s < 30 || thickCm < 8) continue;
-        newWalls.push({ id: crypto.randomUUID(), x1: toWorldX(g.x1), y1: toWorldY(g.y), x2: toWorldX(g.x2), y2: toWorldY(g.y), thickness: Math.min(60, Math.max(5, thickCm)) });
-        wallClusters.push({ g, horiz: true, W: newWalls[newWalls.length - 1] });
+        if ((g.x2 - g.x1) * s < 40 || thickPx < MIN_THK_PX) continue;
+        newWalls.push({ id: crypto.randomUUID(), x1: toWorldX(g.x1), y1: toWorldY(g.y), x2: toWorldX(g.x2), y2: toWorldY(g.y), thickness: Math.min(60, Math.max(10, thickPx * s)) });
       }
       for (const g of vGroups) {
         const thickPx = g.xs.length;
-        const thickCm = thickPx * s;
-        if ((g.y2 - g.y1) * s < 30 || thickCm < 8) continue;
-        newWalls.push({ id: crypto.randomUUID(), x1: toWorldX(g.x), y1: toWorldY(g.y1), x2: toWorldX(g.x), y2: toWorldY(g.y2), thickness: Math.min(60, Math.max(5, thickCm)) });
-        wallClusters.push({ g, horiz: false, W: newWalls[newWalls.length - 1] });
+        if ((g.y2 - g.y1) * s < 40 || thickPx < MIN_THK_PX) continue;
+        newWalls.push({ id: crypto.randomUUID(), x1: toWorldX(g.x), y1: toWorldY(g.y1), x2: toWorldX(g.x), y2: toWorldY(g.y2), thickness: Math.min(60, Math.max(10, thickPx * s)) });
       }
       if (!newWalls.length) { window.alert('No walls detected. Try a clearer image or calibrate the scale first.'); return; }
 
-      // ---- classify positions along each wall: solid / window / opening ----
-      // Windows: interior empty but both face lines remain (thin parallel lines).
-      // Openings: interior empty AND face lines broken (gap in the wall).
-      const windows = [];
-      const openings = []; // world-space segments along walls where the wall is interrupted
-      for (const { g, horiz } of wallClusters) {
-        const span = horiz ? g.x2 - g.x1 : g.y2 - g.y1;
-        const half = Math.max(1, Math.floor((horiz ? g.ys.length : g.xs.length) / 2));
-        let winStart = -1, opStart = -1;
-        for (let i = 0; i <= span; i++) {
-          const ax = horiz ? g.x1 + i : g.x, ay = horiz ? g.y : g.y1 + i;
-          let fill = 0, total = 0;
-          for (let o = -half - 1; o <= half + 1; o++) {
-            const px = horiz ? ax : ax + o, py = horiz ? ay + o : ay;
-            if (px < 0 || py < 0 || px >= W || py >= H) continue;
-            total++; fill += dark[py * W + px];
-          }
-          const e1 = horiz ? (ay - half >= 0 ? dark[(ay - half) * W + ax] : 0) : (ax - half >= 0 ? dark[ay * W + ax - half] : 0);
-          const e2 = horiz ? (ay + half < H ? dark[(ay + half) * W + ax] : 0) : (ax + half < W ? dark[ay * W + ax + half] : 0);
-          const f = total ? fill / total : 1;
-          const isWindow = f < 0.5 && e1 && e2;
-          const isOpening = !isWindow && f < 0.3 && !(e1 && e2);
-          if (isWindow) { if (winStart < 0) winStart = i; }
-          else { if (winStart >= 0 && i - winStart >= 6 && (i - winStart) * s >= 40 && (i - winStart) * s <= 400) windows.push({ horiz, gx: horiz ? g.x1 + (winStart + i) / 2 : g.x, gy: horiz ? g.y : g.y1 + (winStart + i) / 2, width: (i - winStart) * s }); winStart = -1; }
-          if (isOpening) { if (opStart < 0) opStart = i; }
-          else { if (opStart >= 0 && i - opStart >= 6 && (i - opStart) * s >= 50 && (i - opStart) * s <= 200) openings.push({ horiz, gx: horiz ? g.x1 + (opStart + i) / 2 : g.x, gy: horiz ? g.y : g.y1 + (opStart + i) / 2, width: (i - opStart) * s }); opStart = -1; }
-        }
-      }
-
-      // ---- doors: arc + leaf + wall opening ----
-      const thin = new Uint8Array(W * H);
-      for (let i = 0; i < W * H; i++) thin[i] = dark[i] && !wallMask[i] ? 1 : 0;
-      const thinPts = [];
-      for (let i = 0; i < W * H; i++) if (thin[i]) thinPts.push([i % W, (i / W) | 0]);
-      const arcs = [];
-      const rMin = 40 / s, rMax = 160 / s, T = 2500;
-      for (let it = 0; it < T && thinPts.length >= 3; it++) {
-        const a = thinPts[(Math.random() * thinPts.length) | 0];
-        const b = thinPts[(Math.random() * thinPts.length) | 0];
-        const c = thinPts[(Math.random() * thinPts.length) | 0];
-        const d2 = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
-        if (Math.abs(d2) < 1e-6) continue;
-        const ux = ((a[0]*a[0]+a[1]*a[1]) * (b[1]-c[1]) + (b[0]*b[0]+b[1]*b[1]) * (c[1]-a[1]) + (c[0]*c[0]+c[1]*c[1]) * (a[1]-b[1])) / d2;
-        const uy = ((a[0]*a[0]+a[1]*a[1]) * (c[0]-b[0]) + (b[0]*b[0]+b[1]*b[1]) * (a[0]-c[0]) + (c[0]*c[0]+c[1]*c[1]) * (b[0]-a[0])) / d2;
-        const r = Math.hypot(a[0] - ux, a[1] - uy);
-        if (r < rMin || r > rMax) continue;
-        let inliers = 0; const quad = [0, 0, 0, 0];
-        for (const p of thinPts) {
-          if (Math.abs(Math.hypot(p[0] - ux, p[1] - uy) - r) < 1.6) { inliers++; quad[((p[0] >= ux ? 1 : 0) + (p[1] >= uy ? 2 : 0))]++; }
-        }
-        const arcLen = Math.max(...quad);
-        if (inliers >= 20 && arcLen / inliers >= 0.6 && r * s >= 40 && r * s <= 160) arcs.push({ ux, uy, r, inliers });
-      }
-      arcs.sort((a, b) => b.inliers - a.inliers);
-      const doors = [];
-      for (const a of arcs) {
-        if (doors.some(o => Math.hypot(o.ux - a.ux, o.uy - a.uy) < 15 && Math.abs(o.r - a.r) < 10)) continue;
-        doors.push(a); if (doors.length >= 12) break;
-      }
-
-      // ---- measurements: dimension lines (long thin H/V runs outside walls)
-      // plus digit/number components sitting next to them. Room names, notes,
-      // symbols, hatching etc. are thin but not beside a dimension line → ignored.
-      const measMask = new Uint8Array(W * H);
-      const measLines = [];
-      {
-        const lim = Math.max(8, Math.round(0.5 / s * 100)); // ~ min 50 cm line
-        for (const horiz of [true, false]) {
-          const out = runsAlong(horiz, thin);
-          for (const c of out) {
-            const lenPx = horiz ? c.x2 - c.x1 : c.y2 - c.y1;
-            if (lenPx * s >= 40) measLines.push({ horiz, ...c });
-          }
-        }
-        for (const L of measLines) for (let i = 0; i <= (L.horiz ? L.x2 - L.x1 : L.y2 - L.y1); i++) {
-          const px = L.horiz ? L.x1 + i : L.x, py = L.horiz ? L.y : L.y1 + i;
-          if (px >= 0 && py >= 0 && px < W && py < H) measMask[py * W + px] = 1;
-        }
-        // nearby text components count as measurement numbers
-        const seen = new Uint8Array(W * H);
-        const stack = [];
-        for (let i = 0; i < W * H; i++) {
-          if (!thin[i] || seen[i]) continue;
-          const comp = []; stack.length = 0; stack.push(i); seen[i] = 1;
-          let sumX = 0, sumY = 0;
-          while (stack.length) {
-            const j = stack.pop(); comp.push(j); sumX += j % W; sumY += (j / W) | 0;
-            const x = j % W, y = (j / W) | 0;
-            for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-              const nx = x + dx, ny = y + dy, k = ny * W + nx;
-              if (nx >= 0 && ny >= 0 && nx < W && ny < H && !seen[k] && thin[k]) { seen[k] = 1; stack.push(k); }
-            }
-          }
-          if (comp.length < 4 || comp.length > 2000) continue; // ticks/smudges or huge letters
-          const cxp = sumX / comp.length, cyp = sumY / comp.length;
-          const near = measLines.some(L => {
-            const lx = L.horiz ? Math.min(Math.max(cxp, L.x1), L.x2) : L.x;
-            const ly = L.horiz ? L.y : Math.min(Math.max(cyp, L.y1), L.y2);
-            return Math.hypot(cxp - lx, cyp - ly) < Math.max(30, 80 / (s * 2.5));
-          });
-          if (near) for (const j of comp) measMask[j] = 1;
-        }
-      }
-
-      // ---- build result: wall assets as geometry, door/window assets snapped to walls
-      const projs = newWalls.map(w => ({ x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 }));
-      function snap(wx, wy) {
-        let best = -1, bd = Infinity, bt = 0;
-        projs.forEach((w, i) => {
-          const dx = w.x2 - w.x1, dy = w.y2 - w.y1, l2 = dx * dx + dy * dy;
-          if (!l2) return;
-          let t = ((wx - w.x1) * dx + (wy - w.y1) * dy) / l2; t = Math.max(0, Math.min(1, t));
-          const d = Math.hypot(w.x1 + t * dx - wx, w.y1 + t * dy - wy);
-          if (d < bd) { bd = d; bt = t; best = i; }
-        });
-        return best < 0 || bd > 150 ? null : { i: best, t: bt };
-      }
-      const newAssets = [];
-      for (const wd of windows) {
-        const hit = snap(toWorldX(wd.gx), toWorldY(wd.gy));
-        if (!hit) continue;
-        const w = projs[hit.i];
-        const len = Math.hypot(w.x2 - w.x1, w.y2 - w.y1) || 1;
-        const hw = Math.min(wd.width / 2, len / 2);
-        newAssets.push({ id: crypto.randomUUID(), type: 'window', wallId: newWalls[hit.i].id, t: Math.min(Math.max(hit.t, hw / len), 1 - hw / len), width: wd.width, swing: 1 });
-      }
-      for (const op of openings) {
-        // door = arc + leaf + opening: require an arc whose hinge sits on this opening
-        const opW = { x: toWorldX(op.gx), y: toWorldY(op.gy) };
-        const match = doors.find(dr => Math.hypot(toWorldX(dr.ux) - opW.x, toWorldY(dr.uy) - opW.y) < Math.max(op.width / 2, 40));
-        if (!match) continue;
-        const hit = snap(opW.x, opW.y);
-        if (!hit) continue;
-        const w = projs[hit.i];
-        const len = Math.hypot(w.x2 - w.x1, w.y2 - w.y1) || 1;
-        const width = Math.min(match.r * s, op.width * 1.2);
-        const hw = Math.min(width / 2, len / 2);
-        newAssets.push({ id: crypto.randomUUID(), type: 'door', wallId: newWalls[hit.i].id, t: Math.min(Math.max(hit.t, hw / len), 1 - hw / len), width, swing: 1 });
-      }
-
       project.walls.push(...newWalls);
-      project.assets = (project.assets || []).concat(newAssets);
-
-      // measurement mask overlay (kept separate from geometry)
-      try {
-        const mc = document.createElement('canvas'); mc.width = W; mc.height = H;
-        const mctx = mc.getContext('2d');
-        const im = mctx.createImageData(W, H);
-        for (let i = 0; i < W * H; i++) if (measMask[i]) { im.data[i * 4] = 255; im.data[i * 4 + 1] = 153; im.data[i * 4 + 2] = 0; im.data[i * 4 + 3] = 200; }
-        mctx.putImageData(im, 0, 0);
-        project.measOverlay = mc.toDataURL();
-      } catch { project.measOverlay = null; }
+      project.assets = (project.assets || []);
+      project.measOverlay = null;
       scheduleSave(); pushHistory(); fitToContent();
-      window.alert(`Detected ${newWalls.length} wall(s), ${newAssets.filter(a => a.type === 'door').length} door(s), ${newAssets.filter(a => a.type === 'window').length} window(s), ${measLines.length} dimension line(s). Orange overlay shows the measurement mask.`);
+      window.alert(`Detected ${newWalls.length} wall segment(s).`);
     };
+
 
     document.getElementById('zoomIn').onclick = () => { zoom *= 1.25; applyView(); render(); };
     document.getElementById('zoomOut').onclick = () => { zoom /= 1.25; applyView(); render(); };
@@ -1091,12 +959,49 @@ const Editor = (() => {
       a.hinge = (a.hinge || 1) === 1 ? -1 : 1;
       scheduleSave(); render(); pushHistory();
     };
-    // add-asset dropdown
-    document.getElementById('addAssetBtn').onclick = () => {
-      pendingAsset = document.getElementById('addAsset').value;
-      mode = 'select'; selectedIds = new Set(); selectedAssets = new Set();
-      updateDeleteBtn(); render();
+    // Add dialog: room / door / window
+    const addModalEl = document.getElementById('addModal');
+    const addModal = () => bootstrap.Modal.getOrCreateInstance(addModalEl);
+    document.getElementById('addBtn').onclick = () => addModal().show();
+    document.getElementById('addDoorBtn').onclick = () => {
+      pendingAsset = 'door'; mode = 'select'; selectedIds = new Set(); selectedAssets = new Set();
+      updateDeleteBtn(); render(); addModal().hide();
     };
+    document.getElementById('addWindowBtn').onclick = () => {
+      pendingAsset = 'window'; mode = 'select'; selectedIds = new Set(); selectedAssets = new Set();
+      updateDeleteBtn(); render(); addModal().hide();
+    };
+    document.getElementById('addRoomBtn').onclick = () => {
+      const area = parseFloat(document.getElementById('roomArea').value);
+      if (!(area > 0)) { window.alert('Enter a room area in m².'); return; }
+      const shape = document.getElementById('roomShape').value;
+      let wCm, hCm;
+      if (shape === 'square') {
+        wCm = hCm = Math.sqrt(area) * 100;
+      } else {
+        // rectangle: 3:2 aspect ratio, sized so w*h == area
+        wCm = Math.sqrt(area * 1.5) * 100;
+        hCm = Math.sqrt(area / 1.5) * 100;
+      }
+      // place the room centered in the current view
+      const r = svg.getBoundingClientRect();
+      const cx = (r.width / 2 - panX) / zoom, cy = (r.height / 2 - panY) / zoom;
+      const x1 = cx - wCm / 2, y1 = cy - hCm / 2, x2 = cx + wCm / 2, y2 = cy + hCm / 2;
+      const corners = [
+        [x1, y1, x2, y1], [x2, y1, x2, y2], [x2, y2, x1, y2], [x1, y2, x1, y1],
+      ];
+      const ids = [];
+      for (const [ax, ay, bx, by] of corners) {
+        const id = crypto.randomUUID();
+        project.walls.push({ id, x1: ax, y1: ay, x2: bx, y2: by, thickness: wallThickness });
+        ids.push(id);
+      }
+      selectedIds = new Set(ids); selectedAssets = new Set();
+      mode = 'select'; drawing = null; calibrating = null;
+      scheduleSave(); updateDeleteBtn(); render(); pushHistory();
+      addModal().hide();
+    };
+
     document.getElementById('undoBtn').onclick = undo;
     document.getElementById('redoBtn').onclick = redo;
     document.getElementById('wallLen').onchange = applyInspector;
