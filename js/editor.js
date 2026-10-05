@@ -15,6 +15,8 @@ const Editor = (() => {
   let panning = null;
   let selectedIds = new Set();
   let saveTimer = null;
+  let clipboard = null;       // {walls, assets} in-memory copy
+  let pasteCount = 0;         // offset each consecutive paste
   const history = { stack: [], idx: -1 };
 
   function snapshot() { return JSON.stringify({ walls: project.walls, assets: project.assets || [] }); }
@@ -42,14 +44,41 @@ const Editor = (() => {
   const GRID = 25;             // cm
   const snapTo = v => v;
 
+  // A wall end is "connected" when another wall starts/ends at the same point
+  // or passes through it. Only connected ends may extend past the endpoint.
+  function endConnected(w, end) {
+    const p = end === 'p1' ? { x: w.x1, y: w.y1 } : { x: w.x2, y: w.y2 };
+    for (const o of project.walls) {
+      if (o === w) continue;
+      if (Math.hypot(o.x1 - p.x, o.y1 - p.y) < 1e-6 || Math.hypot(o.x2 - p.x, o.y2 - p.y) < 1e-6) return true;
+      if (liesOnWallInterior(o, p)) return true;
+    }
+    return false;
+  }
+
+  // Geometry of the wall's stroke. Free ends are pulled in by half the
+  // thickness so the square cap's outer edge lands exactly on the endpoint —
+  // changing the thickness then only fattens the wall, never lengthens it.
+  // Connected ends keep the full square cap so joints stay closed.
+  function strokeEnds(w) {
+    const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
+    const l = Math.hypot(dx, dy); if (!l) return { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 };
+    const ux = dx / l, uy = dy / l, o = w.thickness / 2;
+    const a = endConnected(w, 'p1') ? 0 : Math.min(o, l / 2);
+    const b = endConnected(w, 'p2') ? 0 : Math.min(o, l / 2);
+    return { x1: w.x1 + ux * a, y1: w.y1 + uy * a, x2: w.x2 - ux * b, y2: w.y2 - uy * b };
+  }
+
   function endpoints(excludeId) {
     const pts = [];
     for (const w of project.walls) {
       if (w.id === excludeId) continue;
       const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
       const l = Math.hypot(dx, dy) || 1;
-      const ux = dx / l, uy = dy / l, o = w.thickness / 2; // very edge of the square cap
-      pts.push({ x: w.x1 - ux * o, y: w.y1 - uy * o }, { x: w.x2 + ux * o, y: w.y2 + uy * o });
+      const ux = dx / l, uy = dy / l;
+      const o1 = endConnected(w, 'p1') ? w.thickness / 2 : 0; // very edge of the square cap
+      const o2 = endConnected(w, 'p2') ? w.thickness / 2 : 0;
+      pts.push({ x: w.x1 - ux * o1, y: w.y1 - uy * o1 }, { x: w.x2 + ux * o2, y: w.y2 + uy * o2 });
     }
     return pts;
   }
@@ -162,11 +191,12 @@ const Editor = (() => {
       const grp = el('g', { 'data-id': w.id, cursor: mode === 'select' ? 'move' : mode === 'edit' ? 'pointer' : 'crosshair' });
       const selected = selectedIds.has(w.id);
       const fill = w.fill || 'solid';
+      const se = strokeEnds(w);
       if (fill !== 'solid' && !selected) {
-        grp.appendChild(el('line', { x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2, stroke: '#e0e0e0', 'stroke-opacity': 0.2, 'stroke-width': w.thickness, 'stroke-linecap': 'square' }));
+        grp.appendChild(el('line', { x1: se.x1, y1: se.y1, x2: se.x2, y2: se.y2, stroke: '#e0e0e0', 'stroke-opacity': 0.2, 'stroke-width': w.thickness, 'stroke-linecap': 'square' }));
       }
       grp.appendChild(el('line', {
-        x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2,
+        x1: se.x1, y1: se.y1, x2: se.x2, y2: se.y2,
         stroke: selected ? '#ffd166' : fill === 'solid' ? '#e0e0e0' : fill === 'dots' ? 'url(#patDots)' : 'url(#patDash)',
         'stroke-opacity': fill === 'solid' && !selected ? 0.75 : 1,
         'stroke-width': w.thickness,
@@ -281,7 +311,8 @@ const Editor = (() => {
     }
     if (drawing) {
       overlay.innerHTML = '';
-      overlay.appendChild(el('line', { x1: drawing.x1, y1: drawing.y1, x2: drawing.x2, y2: drawing.y2, stroke: '#4dabf7', 'stroke-width': wallThickness, 'stroke-linecap': 'square', 'stroke-dasharray': `${8 / zoom} ${6 / zoom}` }));
+      const dse = strokeEnds({ x1: drawing.x1, y1: drawing.y1, x2: drawing.x2, y2: drawing.y2, thickness: wallThickness });
+      overlay.appendChild(el('line', { x1: dse.x1, y1: dse.y1, x2: dse.x2, y2: dse.y2, stroke: '#4dabf7', 'stroke-width': wallThickness, 'stroke-linecap': 'square', 'stroke-dasharray': `${8 / zoom} ${6 / zoom}` }));
       const dx = drawing.x2 - drawing.x1, dy = drawing.y2 - drawing.y1;
       let dmx = (drawing.x1 + drawing.x2) / 2, dmy = (drawing.y1 + drawing.y2) / 2, da;
       const doff = wallThickness / 2 + 10 / zoom;
@@ -369,6 +400,35 @@ const Editor = (() => {
   }
 
   function onlySelected() { return selectedIds.size === 1 ? [...selectedIds][0] : null; }
+
+  function copySelection() {
+    const wallIds = new Set(selectedIds);
+    const assets = (project.assets || []).filter(a => selectedAssets.has(a.id) || selectedIds.has(a.wallId));
+    for (const a of assets) wallIds.add(a.wallId);
+    const walls = project.walls.filter(w => wallIds.has(w.id));
+    if (!walls.length && !assets.length) return;
+    clipboard = JSON.parse(JSON.stringify({ walls, assets }));
+    pasteCount = 0;
+  }
+
+  function pasteClipboard() {
+    if (!clipboard) return;
+    pasteCount++;
+    const d = 25 * pasteCount; // cm
+    const idMap = {};
+    const newWalls = clipboard.walls.map(w => {
+      const id = crypto.randomUUID(); idMap[w.id] = id;
+      return { ...w, id, x1: w.x1 + d, y1: w.y1 + d, x2: w.x2 + d, y2: w.y2 + d };
+    });
+    const newAssets = clipboard.assets.filter(a => idMap[a.wallId]).map(a => ({
+      ...a, id: crypto.randomUUID(), wallId: idMap[a.wallId],
+    }));
+    project.walls.push(...newWalls);
+    project.assets = (project.assets || []).concat(newAssets);
+    selectedIds = new Set(newWalls.map(w => w.id));
+    selectedAssets = new Set(newAssets.map(a => a.id));
+    scheduleSave(); updateDeleteBtn(); render(); pushHistory();
+  }
 
   function applyInspector() {
     const w = project.walls.find(w => w.id === onlySelected());
@@ -562,6 +622,8 @@ const Editor = (() => {
     document.addEventListener('keydown', e => {
       const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
       if (typing) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') { e.preventDefault(); copySelection(); }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') { e.preventDefault(); pasteClipboard(); }
       if ((e.key === 'Delete' || e.key === 'Backspace') && (selectedIds.size || selectedAssets.size)) {
         project.walls = project.walls.filter(w => !selectedIds.has(w.id));
         project.assets = (project.assets || []).filter(a => !selectedAssets.has(a.id) && !selectedIds.has(a.wallId));
