@@ -822,6 +822,27 @@ const Editor = (() => {
       if (e.key === 'Escape' && pendingAsset) { pendingAsset = null; render(); }
       if (e.key === 'Escape' && calibrating) { calibrating = null; mode = 'select'; render(); }
       if (e.key === 'Escape' && marquee) { marquee = null; render(); }
+      if (e.key.startsWith('Arrow') && (selectedIds.size || selectedAssets.size)) {
+        e.preventDefault();
+        const step = e.shiftKey ? 25 : 5;
+        const ddx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        const ddy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+        for (const w of project.walls) {
+          if (!selectedIds.has(w.id)) continue;
+          w.x1 += ddx; w.y1 += ddy; w.x2 += ddx; w.y2 += ddy;
+        }
+        // assets anchored to a moved wall follow it automatically; assets
+        // selected on their own slide along their wall
+        for (const a of (project.assets || [])) {
+          if (!selectedAssets.has(a.id)) continue;
+          const w = project.walls.find(x => x.id === a.wallId);
+          if (!w || selectedIds.has(w.id)) continue;
+          const dx = w.x2 - w.x1, dy = w.y2 - w.y1, len = Math.hypot(dx, dy) || 1;
+          const hw = Math.min(a.width / 2, len / 2);
+          a.t = Math.min(Math.max(a.t + (ddx * dx + ddy * dy) / (len * len), hw / len), 1 - hw / len);
+        }
+        scheduleSave(); render(); updateInspector(); pushHistory();
+      }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
       if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
     });
