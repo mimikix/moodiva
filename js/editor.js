@@ -1,4 +1,4 @@
-// editor.js — SVG floor-plan editor (walls). Units: cm.
+// editor.js � SVG floor-plan editor (walls). Units: cm.
 const Editor = (() => {
   const SVGNS = 'http://www.w3.org/2000/svg';
   let project, projectPath, svg, world, overlay;
@@ -63,7 +63,7 @@ const Editor = (() => {
   }
 
   // Geometry of the wall's stroke. Free ends are pulled in by half the
-  // thickness so the square cap's outer edge lands exactly on the endpoint —
+  // thickness so the square cap's outer edge lands exactly on the endpoint �
   // changing the thickness then only fattens the wall, never lengthens it.
   // Connected ends keep the full square cap so joints stay closed.
   function strokeEnds(w) {
@@ -104,7 +104,7 @@ const Editor = (() => {
       const l2 = dx * dx + dy * dy; if (!l2) continue;
       let t = ((p.x - w.x1) * dx + (p.y - w.y1) * dy) / l2;
       const l = Math.sqrt(l2);
-      // interior only — skip the corner zones so corners snap to corners
+      // interior only � skip the corner zones so corners snap to corners
       if (t < 0 || t > 1 || t * l < w.thickness / 2 || (1 - t) * l < w.thickness / 2) continue;
       const px = w.x1 + t * dx, py = w.y1 + t * dy;
       let nx = -dy / l, ny = dx / l;
@@ -113,7 +113,7 @@ const Editor = (() => {
       if ((ref.x - px) * nx + (ref.y - py) * ny < 0) { nx = -nx; ny = -ny; }
       let fx = px + nx * w.thickness / 2, fy = py + ny * w.thickness / 2;
       // Parallel (stacked) case: lay the new wall flush on the existing
-      // wall's extremity line — push the endpoint out by half the new
+      // wall's extremity line � push the endpoint out by half the new
       // wall's thickness so its edge, and thus its end corners, sit exactly
       // on that line.
       if (other && thick) {
@@ -128,53 +128,6 @@ const Editor = (() => {
     return best || { x: p.x, y: p.y };
   }
 
-  // AutoCAD-style dimension along wall w, from joint q to its closest extremity.
-  // (dirx, diry) = direction of the connecting wall at q (used to place dim on opposite side).
-  function addConnDim(g, w, q, dirx, diry) {
-    const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
-    const len = Math.hypot(dx, dy); if (!len) return;
-    const ux = dx / len, uy = dy / len;
-    const d1 = Math.hypot(q.x - w.x1, q.y - w.y1);
-    const d2 = Math.hypot(q.x - w.x2, q.y - w.y2);
-    const end = d1 <= d2 ? { x: w.x1, y: w.y1 } : { x: w.x2, y: w.y2 };
-    const dist = Math.min(d1, d2);
-    let nx = -uy, ny = ux;
-    if (nx * dirx + ny * diry > 0) { nx = -nx; ny = -ny; }
-    const off = w.thickness / 2 + 14 / zoom;
-    const ax = q.x + nx * off, ay = q.y + ny * off;
-    const bx = end.x + nx * off, by = end.y + ny * off;
-    const g2 = el('g', { stroke: '#ffd166', 'stroke-width': 1.2 / zoom, fill: 'none' });
-    // extension lines
-    for (const p of [q, end]) {
-      g2.appendChild(el('line', {
-        x1: p.x + nx * (w.thickness / 2 + 2 / zoom), y1: p.y + ny * (w.thickness / 2 + 2 / zoom),
-        x2: p.x + nx * (off + 4 / zoom), y2: p.y + ny * (off + 4 / zoom),
-      }));
-    }
-    // dimension line
-    g2.appendChild(el('line', { x1: ax, y1: ay, x2: bx, y2: by }));
-    // arrowheads
-    const s = 7 / zoom, wd = 3 / zoom;
-    const ang = Math.atan2(by - ay, bx - ax);
-    for (const [tip, a] of [[ [ax, ay], ang ], [ [bx, by], ang + Math.PI ]]) {
-      const p1 = `${tip[0]},${tip[1]}`;
-      const b1x = tip[0] + Math.cos(a) * s + Math.cos(a + Math.PI / 2) * wd, b1y = tip[1] + Math.sin(a) * s + Math.sin(a + Math.PI / 2) * wd;
-      const b2x = tip[0] + Math.cos(a) * s - Math.cos(a + Math.PI / 2) * wd, b2y = tip[1] + Math.sin(a) * s - Math.sin(a + Math.PI / 2) * wd;
-      g2.appendChild(el('path', { d: `M${p1} L${b1x},${b1y} L${b2x},${b2y} Z`, fill: '#ffd166', stroke: 'none' }));
-    }
-    // text — same direction rules as the wall labels
-    let la;
-    const adeg = Math.atan2(uy, ux) * 180 / Math.PI;
-    if (Math.abs(adeg) > 89.5 && Math.abs(adeg) < 90.5) la = -90; // vertical: read down→up
-    else if (Math.abs(adeg) < 0.5 || Math.abs(adeg) > 179.5) la = 0; // horizontal: read L→R
-    else { la = adeg; if (la < -90) la += 180; else if (la > 90) la -= 180; }
-    const mxp = (ax + bx) / 2 + nx * 12 / zoom, myp = (ay + by) / 2 + ny * 12 / zoom;
-    const t = el('text', { x: mxp, y: myp, 'text-anchor': 'middle', fill: '#ffd166', 'font-size': 12 / zoom, stroke: 'none', transform: `rotate(${la} ${mxp} ${myp})` });
-    t.textContent = fmtLen(dist);
-    g2.appendChild(t);
-    g.appendChild(g2);
-  }
-
   function liesOnWallInterior(w, p) {
     const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
     const l2 = dx * dx + dy * dy; if (!l2) return false;
@@ -183,17 +136,6 @@ const Editor = (() => {
     return Math.hypot(w.x1 + t * dx - p.x, w.y1 + t * dy - p.y) < 1e-6;
   }
 
-  // True when p sits strictly inside w's body line OR exactly on either of
-  // w's face (extremity) lines — the two ways a T-junction endpoint can
-  // touch another wall.
-  function liesOnWallJoint(w, p) {
-    const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
-    const l2 = dx * dx + dy * dy; if (!l2) return false;
-    const t = ((p.x - w.x1) * dx + (p.y - w.y1) * dy) / l2;
-    if (t <= 1e-6 || t >= 1 - 1e-6) return false;
-    const d = Math.hypot(w.x1 + t * dx - p.x, w.y1 + t * dy - p.y);
-    return d < 1e-6 || Math.abs(d - w.thickness / 2) < 1e-6;
-  }
 
   function el(tag, attrs) {
     const e = document.createElementNS(SVGNS, tag);
@@ -264,10 +206,10 @@ const Editor = (() => {
       const dx = w.x2 - w.x1, dy = w.y2 - w.y1;
       let lx, ly, la;
       const adeg = Math.atan2(dy, dx) * 180 / Math.PI;
-      if (Math.abs(adeg) > 89.5 && Math.abs(adeg) < 90.5) { lx = mx - off; ly = my; la = -90; }  // vertical: left side, read down→up
-      else if (Math.abs(adeg) < 0.5 || Math.abs(adeg) > 179.5) { lx = mx; ly = my - off; la = 0; } // horizontal: top, read L→R
+      if (Math.abs(adeg) > 89.5 && Math.abs(adeg) < 90.5) { lx = mx - off; ly = my; la = -90; }  // vertical: left side, read down?up
+      else if (Math.abs(adeg) < 0.5 || Math.abs(adeg) > 179.5) { lx = mx; ly = my - off; la = 0; } // horizontal: top, read L?R
       else {
-        // angled wall: parallel to the wall, above the line, read left→right
+        // angled wall: parallel to the wall, above the line, read left?right
         la = adeg;
         if (la < -90) la += 180; else if (la > 90) la -= 180;
         const rad = la * Math.PI / 180;
@@ -277,7 +219,7 @@ const Editor = (() => {
         x: lx, y: ly, 'text-anchor': 'middle', fill: '#9ecbff', 'font-size': 14 / zoom,
         transform: `rotate(${la} ${lx} ${ly})`,
       });
-      t.textContent = `${fmtLen(wallLength(w))} · ${wallAngle(w).toFixed(1)}°`;
+      t.textContent = fmtLen(wallLength(w));
       grp.appendChild(t);
       grp.addEventListener('pointerdown', e => onWallDown(e, w));
       grp.addEventListener('dblclick', e => { e.stopPropagation(); mode = 'edit'; drawing = null; selectedIds = new Set([w.id]); selectedAssets = new Set(); updateDeleteBtn(); render(); });
@@ -350,19 +292,6 @@ const Editor = (() => {
       grp.appendChild(hit);
       world.appendChild(grp);
     }
-    // persistent dimensions for T-connections (endpoint on the middle of another wall)
-    for (const a of project.walls) {
-      for (const ep of [[a.x1, a.y1], [a.x2, a.y2]]) {
-        for (const b of project.walls) {
-          if (b === a) continue;
-          if (liesOnWallJoint(b, { x: ep[0], y: ep[1] })) {
-            const ox = ep[0] === a.x1 && ep[1] === a.y1 ? a.x2 : a.x1;
-            const oy = ep[0] === a.x1 && ep[1] === a.y1 ? a.y2 : a.y1;
-            addConnDim(world, b, { x: ep[0], y: ep[1] }, ox - ep[0], oy - ep[1]);
-          }
-        }
-      }
-    }
     if (drawing) {
       overlay.innerHTML = '';
       const dse = strokeEnds({ x1: drawing.x1, y1: drawing.y1, x2: drawing.x2, y2: drawing.y2, thickness: wallThickness });
@@ -382,16 +311,6 @@ const Editor = (() => {
       const t = el('text', { x: dmx, y: dmy, 'text-anchor': 'middle', fill: '#4dabf7', 'font-size': 14 / zoom, transform: `rotate(${da} ${dmx} ${dmy})` });
       t.textContent = fmtLen(Math.hypot(drawing.x2 - drawing.x1, drawing.y2 - drawing.y1));
       overlay.appendChild(t);
-      // live dimension when an end joins the middle of an existing wall
-      for (const ep of [[drawing.x1, drawing.y1], [drawing.x2, drawing.y2]]) {
-        for (const w of project.walls) {
-          if (liesOnWallJoint(w, { x: ep[0], y: ep[1] })) {
-            const ox = ep[0] === drawing.x1 && ep[1] === drawing.y1 ? drawing.x2 : drawing.x1;
-            const oy = ep[0] === drawing.x1 && ep[1] === drawing.y1 ? drawing.y2 : drawing.y1;
-            addConnDim(overlay, w, { x: ep[0], y: ep[1] }, ox - ep[0], oy - ep[1]);
-          }
-        }
-      }
     } else overlay.innerHTML = '';
     if (calibrating) {
       overlay.appendChild(el('circle', { cx: calibrating.x, cy: calibrating.y, r: 6 / zoom, fill: '#ff6b6b', stroke: '#111', 'stroke-width': 1.5 / zoom }));
@@ -419,7 +338,7 @@ const Editor = (() => {
   function onAssetDown(e, a) {
     if (pendingAsset) return;
     e.stopPropagation();
-    if (lastDown.id === a.id && performance.now() - lastDown.time < 450) { // double click → edit mode
+    if (lastDown.id === a.id && performance.now() - lastDown.time < 450) { // double click ? edit mode
       lastDown = { id: null, time: 0 };
       mode = 'edit'; drawing = null; calibrating = null;
       selectedAssets = new Set([a.id]); selectedIds = new Set();
@@ -432,7 +351,7 @@ const Editor = (() => {
       svg.setPointerCapture(e.pointerId);
       return;
     }
-    // single click → select/move mode + immediate drag
+    // single click ? select/move mode + immediate drag
     selectedAssets = new Set([a.id]);
     selectedIds = new Set();
     mode = 'select'; drawing = null; calibrating = null;
@@ -757,7 +676,7 @@ const Editor = (() => {
     svg.addEventListener('pointerup', e => {
       if (panning) panning = null;
       if (maybeToggle) {
-        // Ctrl+click without drag → toggle that item in the selection
+        // Ctrl+click without drag ? toggle that item in the selection
         if (maybeToggle.kind === 'wall') {
           if (selectedIds.has(maybeToggle.id)) selectedIds.delete(maybeToggle.id); else selectedIds.add(maybeToggle.id);
         } else {
@@ -852,147 +771,6 @@ const Editor = (() => {
     document.getElementById('modeEdit').onclick = () => { mode = 'edit'; drawing = null; calibrating = null; updateDeleteBtn(); render(); };
     document.getElementById('modeSelect').onclick = () => { mode = 'select'; drawing = null; calibrating = null; updateDeleteBtn(); render(); };
 
-    // ---- import floor-plan picture ----
-    function updateBgButtons() {
-      const has = !!project.bgImage;
-      document.getElementById('calibrateBg').disabled = !has;
-      document.getElementById('detectWalls').disabled = !has;
-      document.getElementById('removeBg').disabled = !has;
-    }
-    function loadBgMeta() {
-      if (!project.bgImage) { bgSize = { w: 0, h: 0 }; updateBgButtons(); render(); return; }
-      const im = new Image();
-      im.onload = () => {
-        bgSize = { w: im.naturalWidth, h: im.naturalHeight };
-        if (!project.bgScale) project.bgScale = 1200 / im.naturalWidth; // default: ~12 m wide
-        updateBgButtons(); fitToContent();
-      };
-      im.src = project.bgImage;
-    }
-
-    document.getElementById('importBg').onclick = () => document.getElementById('bgFile').click();
-    document.getElementById('bgFile').onchange = e => {
-      const f = e.target.files && e.target.files[0];
-      if (!f) return;
-      const rd = new FileReader();
-      rd.onload = () => {
-        project.bgImage = rd.result;
-        project.bgX = 0; project.bgY = 0; project.bgScale = null;
-        calibrating = null; drawing = null;
-        scheduleSave(); pushHistory(); loadBgMeta();
-      };
-      rd.readAsDataURL(f);
-      e.target.value = '';
-    };
-    document.getElementById('calibrateBg').onclick = () => {
-      if (!project.bgImage) return;
-      mode = 'calibrate'; calibrating = null; drawing = null;
-      selectedIds = new Set(); selectedAssets = new Set();
-      updateDeleteBtn(); render();
-    };
-    document.getElementById('removeBg').onclick = () => {
-      project.bgImage = null; project.bgScale = null; project.measOverlay = null; bgSize = { w: 0, h: 0 };
-      calibrating = null;
-      scheduleSave(); pushHistory(); updateBgButtons(); render();
-    };
-
-    // Detect walls in an architectural floor plan.
-    // Walls are thick continuous bands (solid or double parallel lines, often
-    // hatched). Thin markings (dimension lines, numbers, room names, notes)
-    // are rejected by the thickness filter. Measurements are NOT walls.
-    document.getElementById('detectWalls').onclick = async () => {
-      if (!project.bgImage || !bgSize.w) return;
-      const s = project.bgScale || (1200 / bgSize.w);
-      const img = new Image();
-      img.src = project.bgImage;
-      try { await img.decode(); } catch { await new Promise(r => img.onload = r); }
-      const W = img.naturalWidth, H = img.naturalHeight;
-      const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
-      const cx = cv.getContext('2d');
-      cx.drawImage(img, 0, 0);
-      const d = cx.getImageData(0, 0, W, H).data;
-      const dark = new Uint8Array(W * H);
-      for (let i = 0; i < W * H; i++) dark[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3 < 160 ? 1 : 0;
-      const toWorldX = px => (project.bgX || 0) + px * s;
-      const toWorldY = py => (project.bgY || 0) + py * s;
-
-      // 1) Solid wall mask: flood white gaps between the two face lines of a wall
-      //    (covers double-lined, single thick, and hatched wall styles).
-      const maxGap = 28; // px — max interior gap between the two boundary lines
-      const maskH = new Uint8Array(dark), maskV = new Uint8Array(dark);
-      for (let y = 0; y < H; y++) {
-        let x = 0, prev = -1;
-        while (x < W) {
-          if (dark[y * W + x]) {
-            let q = x; while (q + 1 < W && dark[y * W + q + 1]) q++;
-            if (prev >= 0 && x - prev - 1 <= maxGap) for (let k = prev + 1; k < x; k++) maskH[y * W + k] = 1;
-            prev = q; x = q + 1;
-          } else x++;
-        }
-      }
-      for (let x = 0; x < W; x++) {
-        let y = 0, prev = -1;
-        while (y < H) {
-          if (dark[y * W + x]) {
-            let q = y; while (q + 1 < H && dark[(q + 1) * W + x]) q++;
-            if (prev >= 0 && y - prev - 1 <= maxGap) for (let k = prev + 1; k < y; k++) maskV[k * W + x] = 1;
-            prev = q; y = q + 1;
-          } else y++;
-        }
-      }
-      const wallMask = new Uint8Array(W * H);
-      for (let i = 0; i < W * H; i++) wallMask[i] = (maskH[i] || maskV[i]) ? 1 : 0;
-
-      // 2) Wall centerlines from the mask (H/V run clustering).
-      function runsAlong(horizontal, mask, minLenPx) {
-        const cands = [];
-        const L = horizontal ? W : H;
-        for (let a = 0; a < (horizontal ? H : W); a++) {
-          let p = 0;
-          while (p < L) {
-            const v = horizontal ? mask[a * W + p] : mask[p * W + a];
-            if (v) { let q = p; while (q + 1 < L && (horizontal ? mask[a * W + q + 1] : mask[(q + 1) * W + a])) q++; if (q - p + 1 >= minLenPx) cands.push(horizontal ? { x1: p, x2: q, y: a } : { y1: p, y2: q, x: a }); p = q + 1; }
-            else p++;
-          }
-        }
-        return cands;
-      }
-      const minLenPx = Math.max(12, Math.round(Math.min(W, H) * 0.012));
-      function cluster(cands, horizontal) {
-        const groups = [];
-        for (const c of cands) {
-          const g = groups.find(g => horizontal
-            ? Math.abs(g.y - c.y) <= 5 && c.x1 <= g.x2 && c.x2 >= g.x1
-            : Math.abs(g.x - c.x) <= 5 && c.y1 <= g.y2 && c.y2 >= g.y1);
-          if (g) {
-            if (horizontal) { g.x1 = Math.min(g.x1, c.x1); g.x2 = Math.max(g.x2, c.x2); g.ys.push(c.y); g.y = g.ys.reduce((a, b) => a + b, 0) / g.ys.length; }
-            else { g.y1 = Math.min(g.y1, c.y1); g.y2 = Math.max(g.y2, c.y2); g.xs.push(c.x); g.x = g.xs.reduce((a, b) => a + b, 0) / g.xs.length; }
-          } else groups.push(horizontal ? { x1: c.x1, x2: c.x2, y: c.y, ys: [c.y] } : { y1: c.y1, y2: c.y2, x: c.x, xs: [c.x] });
-        }
-        return groups;
-      }
-      const hGroups = cluster(runsAlong(true, wallMask, minLenPx), true);
-      const vGroups = cluster(runsAlong(false, wallMask, minLenPx), false);
-      const newWalls = [];
-      const MIN_THK_PX = 5; // thin lines (dimensions, text, arcs) are rejected
-      for (const g of hGroups) {
-        const thickPx = g.ys.length;
-        if ((g.x2 - g.x1) * s < 40 || thickPx < MIN_THK_PX) continue;
-        newWalls.push({ id: crypto.randomUUID(), x1: toWorldX(g.x1), y1: toWorldY(g.y), x2: toWorldX(g.x2), y2: toWorldY(g.y), thickness: Math.min(60, Math.max(10, thickPx * s)) });
-      }
-      for (const g of vGroups) {
-        const thickPx = g.xs.length;
-        if ((g.y2 - g.y1) * s < 40 || thickPx < MIN_THK_PX) continue;
-        newWalls.push({ id: crypto.randomUUID(), x1: toWorldX(g.x), y1: toWorldY(g.y1), x2: toWorldX(g.x), y2: toWorldY(g.y2), thickness: Math.min(60, Math.max(10, thickPx * s)) });
-      }
-      if (!newWalls.length) { window.alert('No walls detected. Try a clearer image or calibrate the scale first.'); return; }
-
-      project.walls.push(...newWalls);
-      project.assets = (project.assets || []);
-      project.measOverlay = null;
-      scheduleSave(); pushHistory(); fitToContent();
-      window.alert(`Detected ${newWalls.length} wall segment(s).`);
-    };
 
 
     document.getElementById('zoomIn').onclick = () => { zoom *= 1.25; applyView(); render(); };
@@ -1048,7 +826,7 @@ const Editor = (() => {
     };
     document.getElementById('addRoomBtn').onclick = () => {
       const area = parseFloat(document.getElementById('roomArea').value);
-      if (!(area > 0)) { window.alert('Enter a room area in m².'); return; }
+      if (!(area > 0)) { window.alert('Enter a room area in m�.'); return; }
       const shape = document.getElementById('roomShape').value;
       let wCm, hCm;
       if (shape === 'square') {
@@ -1085,8 +863,6 @@ const Editor = (() => {
     document.getElementById('wallFill').onchange = applyFill;
 
     // initial view: fit the project's walls
-    loadBgMeta();
-    updateBgButtons();
     fitToContent();
     pushHistory();
   }

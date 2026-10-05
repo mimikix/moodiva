@@ -20,18 +20,13 @@
       <button id="deleteSelected" class="btn btn-danger btn-sm" disabled>Delete</button>
       <button id="modeSelect" class="btn btn-outline-light btn-sm">Select / move</button>
       <button id="addBtn" class="btn btn-outline-info btn-sm">Add…</button>
-      <button id="importBg" class="btn btn-outline-light btn-sm" title="Import a picture of a floor plan as the editor background">Import plan image</button>
-      <button id="calibrateBg" class="btn btn-outline-light btn-sm" disabled title="Click two points a known real distance apart">Calibrate scale</button>
-      <button id="detectWalls" class="btn btn-outline-light btn-sm" disabled title="Auto-detect walls from the imported image">Detect walls</button>
-      <button id="removeBg" class="btn btn-outline-danger btn-sm" disabled title="Remove the imported image">Remove image</button>
-      <input id="bgFile" type="file" accept="image/*" class="d-none" />
-      <span class="text-muted small">Shift+drag or middle-drag to pan · wheel to zoom · Delete removes selected · Esc cancels · Ctrl+Z / Ctrl+Y undo/redo · arrows nudge selection · click a wall to place a door/window</span>
       <span class="ms-auto d-flex gap-2 align-items-center">
         <button id="zoomIn" class="btn btn-outline-light btn-sm">+</button>
         <button id="zoomOut" class="btn btn-outline-light btn-sm">−</button>
         <button id="zoomReset" class="btn btn-outline-light btn-sm">Reset view</button>
       </span>
     </div>
+    <div class="text-muted small mb-2">Shift+drag or middle-drag to pan · wheel to zoom · Delete removes selected · Esc cancels · Ctrl+Z / Ctrl+Y undo/redo · arrows nudge selection · click a wall to place a door/window</div>
 
     <div id="inspector" class="d-none align-items-center gap-2 mb-2 small">
       <strong>Selected wall:</strong>
