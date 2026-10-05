@@ -24,6 +24,11 @@
         <option value="window">Window</option>
       </select>
       <button id="addAssetBtn" class="btn btn-outline-info btn-sm">Add</button>
+      <button id="importBg" class="btn btn-outline-light btn-sm" title="Import a picture of a floor plan as the editor background">Import plan image</button>
+      <button id="calibrateBg" class="btn btn-outline-light btn-sm" disabled title="Click two points a known real distance apart">Calibrate scale</button>
+      <button id="detectWalls" class="btn btn-outline-light btn-sm" disabled title="Auto-detect walls from the imported image">Detect walls</button>
+      <button id="removeBg" class="btn btn-outline-danger btn-sm" disabled title="Remove the imported image">Remove image</button>
+      <input id="bgFile" type="file" accept="image/*" class="d-none" />
       <span class="text-muted small">Shift+drag or middle-drag to pan · wheel to zoom · Delete removes selected · Esc cancels · Ctrl+Z / Ctrl+Y undo/redo · click a wall to place a door/window</span>
       <span class="ms-auto d-flex gap-2 align-items-center">
         <button id="zoomIn" class="btn btn-outline-light btn-sm">+</button>

@@ -11,15 +11,20 @@ const Editor = (() => {
   let zoom = 1, panX = 0, panY = 0;
   let drawing = null;          // {x1,y1,x2,y2,line}
   let dragging = null;         // {wall, ox, oy, startX, startY, moved}
+  let calibrating = null;      // first world point of scale calibration
   let endpointDrag = null;     // {wall, end: 'p1'|'p2'}
   let panning = null;
+  let marquee = null;          // {x1,y1,x2,y2} world-space rubber band
+  let maybeToggle = null;      // {kind:'wall'|'asset', id} deferred Ctrl+click toggle
+  let lastDown = { id: null, time: 0 }; // manual double-click tracking
   let selectedIds = new Set();
   let saveTimer = null;
+  let bgSize = { w: 0, h: 0 };
   let clipboard = null;       // {walls, assets} in-memory copy
   let pasteCount = 0;         // offset each consecutive paste
   const history = { stack: [], idx: -1 };
 
-  function snapshot() { return JSON.stringify({ walls: project.walls, assets: project.assets || [] }); }
+  function snapshot() { return JSON.stringify({ walls: project.walls, assets: project.assets || [], bgImage: project.bgImage || null, bgX: project.bgX || 0, bgY: project.bgY || 0, bgScale: project.bgScale || null, measOverlay: project.measOverlay || null }); }
   function pushHistory() {
     history.stack = history.stack.slice(0, history.idx + 1);
     history.stack.push(snapshot());
@@ -30,6 +35,7 @@ const Editor = (() => {
   function restore(snap) {
     const s = JSON.parse(snap);
     project.walls = s.walls; project.assets = s.assets;
+    project.bgImage = s.bgImage || null; project.bgX = s.bgX || 0; project.bgY = s.bgY || 0; project.bgScale = s.bgScale || null; project.measOverlay = s.measOverlay || null;
     selectedIds = new Set(); selectedAssets = new Set();
     scheduleSave(); updateDeleteBtn(); render();
   }
@@ -180,6 +186,22 @@ const Editor = (() => {
 
   function render() {
     world.innerHTML = '';
+    // imported floor-plan picture (drawn first, behind everything)
+    if (project.bgImage && bgSize.w) {
+      const img = el('image', {
+        href: project.bgImage, x: project.bgX || 0, y: project.bgY || 0,
+        width: bgSize.w * (project.bgScale || 1), height: bgSize.h * (project.bgScale || 1),
+        opacity: 0.55, preserveAspectRatio: 'none',
+      });
+      world.appendChild(img);
+    }
+    if (project.measOverlay) {
+      const s = project.bgScale || 1;
+      world.appendChild(el('image', {
+        href: project.measOverlay, x: project.bgX || 0, y: project.bgY || 0,
+        width: bgSize.w * s, height: bgSize.h * s, opacity: 0.8, preserveAspectRatio: 'none',
+      }));
+    }
     // grid
     const g = el('g', { opacity: 0.15 });
     const extent = 20000;
@@ -226,7 +248,7 @@ const Editor = (() => {
       t.textContent = `${fmtLen(wallLength(w))} · ${wallAngle(w).toFixed(1)}°`;
       grp.appendChild(t);
       grp.addEventListener('pointerdown', e => onWallDown(e, w));
-      grp.addEventListener('dblclick', e => { e.stopPropagation(); mode = 'edit'; drawing = null; updateDeleteBtn(); render(); });
+      grp.addEventListener('dblclick', e => { e.stopPropagation(); mode = 'edit'; drawing = null; selectedIds = new Set([w.id]); selectedAssets = new Set(); updateDeleteBtn(); render(); });
       world.appendChild(grp);
       if (selected && mode === 'edit' && selectedIds.size === 1) {
         for (const end of ['p1', 'p2']) {
@@ -339,6 +361,16 @@ const Editor = (() => {
         }
       }
     } else overlay.innerHTML = '';
+    if (calibrating) {
+      overlay.appendChild(el('circle', { cx: calibrating.x, cy: calibrating.y, r: 6 / zoom, fill: '#ff6b6b', stroke: '#111', 'stroke-width': 1.5 / zoom }));
+    }
+    if (marquee) {
+      overlay.appendChild(el('rect', {
+        x: Math.min(marquee.x1, marquee.x2), y: Math.min(marquee.y1, marquee.y2),
+        width: Math.abs(marquee.x2 - marquee.x1), height: Math.abs(marquee.y2 - marquee.y1),
+        fill: 'rgba(77,171,247,0.12)', stroke: '#4dabf7', 'stroke-width': 1.2 / zoom, 'stroke-dasharray': `${6 / zoom} ${4 / zoom}`,
+      }));
+    }
     if (mode === 'draw') {
       for (const q of endpoints()) {
         overlay.appendChild(el('circle', { cx: q.x, cy: q.y, r: 5 / zoom, fill: '#4dabf7', stroke: '#111', 'stroke-width': 1.5 / zoom }));
@@ -354,42 +386,56 @@ const Editor = (() => {
 
   function onAssetDown(e, a) {
     if (pendingAsset) return;
-    if (mode !== 'select' && mode !== 'edit') return;
     e.stopPropagation();
-    if (e.detail === 2) { // double click → edit mode + inspector
-      mode = 'edit'; drawing = null;
+    if (lastDown.id === a.id && performance.now() - lastDown.time < 450) { // double click → edit mode
+      lastDown = { id: null, time: 0 };
+      mode = 'edit'; drawing = null; calibrating = null;
       selectedAssets = new Set([a.id]); selectedIds = new Set();
       updateDeleteBtn(); render(); return;
     }
+    lastDown = { id: a.id, time: performance.now() };
     if (e.ctrlKey || e.metaKey) {
-      if (selectedAssets.has(a.id)) selectedAssets.delete(a.id); else selectedAssets.add(a.id);
-    } else {
-      selectedAssets = new Set([a.id]);
-    }
-    selectedIds = new Set();
-    if (mode === 'select' && selectedAssets.size === 1) {
-      const w = project.walls.find(x => x.id === a.wallId);
-      assetDrag = { asset: a, wall: w };
+      // defer: plain click toggles, drag starts a marquee (multi-select)
+      maybeToggle = { kind: 'asset', id: a.id, sx: e.clientX, sy: e.clientY };
       svg.setPointerCapture(e.pointerId);
+      return;
     }
+    // single click → select/move mode + immediate drag
+    selectedAssets = new Set([a.id]);
+    selectedIds = new Set();
+    mode = 'select'; drawing = null; calibrating = null;
+    const w = project.walls.find(x => x.id === a.wallId);
+    assetDrag = { asset: a, wall: w };
+    svg.setPointerCapture(e.pointerId);
     updateDeleteBtn(); render();
   }
 
   function onWallDown(e, w) {
     if (pendingAsset) return;
-    if (mode !== 'select' && mode !== 'edit') return;
     e.stopPropagation();
-    selectedAssets = new Set();
+    // manual double-click detection (click count resets because render() replaces the DOM)
+    const now = performance.now();
+    if (lastDown.id === w.id && now - lastDown.time < 450) {
+      lastDown = { id: null, time: 0 };
+      mode = 'edit'; drawing = null; calibrating = null; dragging = null;
+      selectedIds = new Set([w.id]); selectedAssets = new Set();
+      updateDeleteBtn(); render(); return;
+    }
+    lastDown = { id: w.id, time: now };
+    if (mode === 'draw' || mode === 'calibrate') { mode = 'select'; drawing = null; calibrating = null; }
     if (e.ctrlKey || e.metaKey) {
-      if (selectedIds.has(w.id)) selectedIds.delete(w.id); else selectedIds.add(w.id);
-    } else {
-      selectedIds = new Set([w.id]);
-    }
-    const p = toWorld(e);
-    if (mode === 'select' && !(e.ctrlKey || e.metaKey)) {
-      dragging = { wall: w, ox: p.x, oy: p.y, x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 };
+      // defer: plain click toggles, drag starts a marquee (multi-select)
+      maybeToggle = { kind: 'wall', id: w.id, sx: e.clientX, sy: e.clientY };
       svg.setPointerCapture(e.pointerId);
+      return;
     }
+    selectedAssets = new Set();
+    selectedIds = new Set([w.id]);
+    // single click on a wall switches to select/move and starts a drag
+    mode = 'select';
+    const p = toWorld(e);
+    dragging = { wall: w, ox: p.x, oy: p.y, x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 };
+    svg.setPointerCapture(e.pointerId);
     updateDeleteBtn();
     render();
   }
@@ -530,6 +576,26 @@ const Editor = (() => {
         }
         pendingAsset = null; mode = 'select'; render(); return;
       }
+      if (mode === 'calibrate') {
+        const p = toWorld(e);
+        if (!calibrating) { calibrating = p; }
+        else {
+          const dWorld = Math.hypot(p.x - calibrating.x, p.y - calibrating.y);
+          const s0 = project.bgScale || 1;
+          const pxDist = dWorld / s0;
+          const input = window.prompt('Real distance between the two points, in meters:');
+          const meters = parseFloat(input);
+          if (meters > 0 && pxDist > 0) {
+            const s1 = (meters * 100) / pxDist;
+            project.bgX = calibrating.x - ((calibrating.x - (project.bgX || 0)) / s0) * s1;
+            project.bgY = calibrating.y - ((calibrating.y - (project.bgY || 0)) / s0) * s1;
+            project.bgScale = s1;
+            scheduleSave(); pushHistory();
+          }
+          calibrating = null; mode = 'select';
+        }
+        render(); return;
+      }
       if (mode === 'draw') {
         if (!drawing) {
           const s = snapPoint(p);
@@ -547,12 +613,28 @@ const Editor = (() => {
       }
       // select mode, clicked empty space
       if (e.target === svg || e.target.tagName === 'line' && e.target.parentNode === world) {
+        if (e.ctrlKey || e.metaKey) {
+          // Ctrl+drag on empty space also starts the multi-select marquee
+          const p = toWorld(e);
+          marquee = { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+          svg.setPointerCapture(e.pointerId);
+          render();
+          return;
+        }
         selectedIds = new Set(); selectedAssets = new Set(); panning = { x: e.clientX, y: e.clientY, panX, panY }; svg.setPointerCapture(e.pointerId); updateDeleteBtn(); render();
       }
     });
 
     svg.addEventListener('pointermove', e => {
       if (panning) { panX = panning.panX + (e.clientX - panning.x); panY = panning.panY + (e.clientY - panning.y); applyView(); return; }
+      if (maybeToggle && !marquee) {
+        if (Math.hypot(e.clientX - maybeToggle.sx, e.clientY - maybeToggle.sy) > 4) {
+          const p = toWorld(e);
+          marquee = { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+          maybeToggle = null;
+        }
+      }
+      if (marquee) { const p = toWorld(e); marquee.x2 = p.x; marquee.y2 = p.y; render(); return; }
       if (dragging) {
         const p = toWorld(e);
         let ddx = snapTo(p.x) - snapTo(dragging.ox);
@@ -603,6 +685,35 @@ const Editor = (() => {
 
     svg.addEventListener('pointerup', e => {
       if (panning) panning = null;
+      if (maybeToggle) {
+        // Ctrl+click without drag → toggle that item in the selection
+        if (maybeToggle.kind === 'wall') {
+          if (selectedIds.has(maybeToggle.id)) selectedIds.delete(maybeToggle.id); else selectedIds.add(maybeToggle.id);
+        } else {
+          if (selectedAssets.has(maybeToggle.id)) selectedAssets.delete(maybeToggle.id); else selectedAssets.add(maybeToggle.id);
+        }
+        maybeToggle = null;
+        updateDeleteBtn(); render();
+      }
+      if (marquee) {
+        const rx1 = Math.min(marquee.x1, marquee.x2), rx2 = Math.max(marquee.x1, marquee.x2);
+        const ry1 = Math.min(marquee.y1, marquee.y2), ry2 = Math.max(marquee.y1, marquee.y2);
+        if (Math.abs(marquee.x2 - marquee.x1) > 2 / zoom || Math.abs(marquee.y2 - marquee.y1) > 2 / zoom) {
+          for (const w of project.walls) {
+            const wx1 = Math.min(w.x1, w.x2), wx2 = Math.max(w.x1, w.x2);
+            const wy1 = Math.min(w.y1, w.y2), wy2 = Math.max(w.y1, w.y2);
+            if (wx1 <= rx2 && wx2 >= rx1 && wy1 <= ry2 && wy2 >= ry1) selectedIds.add(w.id);
+          }
+          for (const a of (project.assets || [])) {
+            const w = project.walls.find(x => x.id === a.wallId);
+            if (!w) continue;
+            const cx = w.x1 + (w.x2 - w.x1) * a.t, cy = w.y1 + (w.y2 - w.y1) * a.t;
+            if (cx >= rx1 && cx <= rx2 && cy >= ry1 && cy <= ry2) selectedAssets.add(a.id);
+          }
+        }
+        marquee = null;
+        updateDeleteBtn(); render();
+      }
       if (dragging) { scheduleSave(); pushHistory(); dragging = null; }
       if (endpointDrag) { scheduleSave(); pushHistory(); endpointDrag = null; }
       if (assetDrag) { scheduleSave(); pushHistory(); assetDrag = null; }
@@ -631,24 +742,332 @@ const Editor = (() => {
       }
       if (e.key === 'Escape' && drawing) { drawing = null; render(); }
       if (e.key === 'Escape' && pendingAsset) { pendingAsset = null; render(); }
+      if (e.key === 'Escape' && calibrating) { calibrating = null; mode = 'select'; render(); }
+      if (e.key === 'Escape' && marquee) { marquee = null; render(); }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
       if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { e.preventDefault(); redo(); }
     });
 
     // toolbar
-    document.getElementById('modeDraw').onclick = () => { mode = 'draw'; selectedIds = new Set(); updateDeleteBtn(); render(); };
-    document.getElementById('modeEdit').onclick = () => { mode = 'edit'; drawing = null; updateDeleteBtn(); render(); };
-    document.getElementById('modeSelect').onclick = () => { mode = 'select'; drawing = null; updateDeleteBtn(); render(); };
+    document.getElementById('modeDraw').onclick = () => { mode = 'draw'; selectedIds = new Set(); calibrating = null; updateDeleteBtn(); render(); };
+    document.getElementById('modeEdit').onclick = () => { mode = 'edit'; drawing = null; calibrating = null; updateDeleteBtn(); render(); };
+    document.getElementById('modeSelect').onclick = () => { mode = 'select'; drawing = null; calibrating = null; updateDeleteBtn(); render(); };
+
+    // ---- import floor-plan picture ----
+    function updateBgButtons() {
+      const has = !!project.bgImage;
+      document.getElementById('calibrateBg').disabled = !has;
+      document.getElementById('detectWalls').disabled = !has;
+      document.getElementById('removeBg').disabled = !has;
+    }
+    function loadBgMeta() {
+      if (!project.bgImage) { bgSize = { w: 0, h: 0 }; updateBgButtons(); render(); return; }
+      const im = new Image();
+      im.onload = () => {
+        bgSize = { w: im.naturalWidth, h: im.naturalHeight };
+        if (!project.bgScale) project.bgScale = 1200 / im.naturalWidth; // default: ~12 m wide
+        updateBgButtons(); fitToContent();
+      };
+      im.src = project.bgImage;
+    }
+
+    document.getElementById('importBg').onclick = () => document.getElementById('bgFile').click();
+    document.getElementById('bgFile').onchange = e => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const rd = new FileReader();
+      rd.onload = () => {
+        project.bgImage = rd.result;
+        project.bgX = 0; project.bgY = 0; project.bgScale = null;
+        calibrating = null; drawing = null;
+        scheduleSave(); pushHistory(); loadBgMeta();
+      };
+      rd.readAsDataURL(f);
+      e.target.value = '';
+    };
+    document.getElementById('calibrateBg').onclick = () => {
+      if (!project.bgImage) return;
+      mode = 'calibrate'; calibrating = null; drawing = null;
+      selectedIds = new Set(); selectedAssets = new Set();
+      updateDeleteBtn(); render();
+    };
+    document.getElementById('removeBg').onclick = () => {
+      project.bgImage = null; project.bgScale = null; project.measOverlay = null; bgSize = { w: 0, h: 0 };
+      calibrating = null;
+      scheduleSave(); pushHistory(); updateBgButtons(); render();
+    };
+
+    // Detect walls in an architectural floor plan:
+    // thick, continuous, often double-lined dark lines forming room boundaries.
+    // The white interiors between the parallel face lines are flooded (gap fill),
+    // producing solid filled wall-thickness regions; thin markings (room labels,
+    // dimension lines, notes) are discarded by the thickness filter.
+    document.getElementById('detectWalls').onclick = async () => {
+      if (!project.bgImage || !bgSize.w) return;
+      const s = project.bgScale || 1;
+      const img = new Image();
+      img.src = project.bgImage;
+      try { await img.decode(); } catch { await new Promise(r => img.onload = r); }
+      const W = img.naturalWidth, H = img.naturalHeight;
+      const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+      const cx = cv.getContext('2d');
+      cx.drawImage(img, 0, 0);
+      const d = cx.getImageData(0, 0, W, H).data;
+      const dark = new Uint8Array(W * H);
+      for (let i = 0; i < W * H; i++) dark[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 3 < 128 ? 1 : 0;
+      const toWorldX = px => (project.bgX || 0) + px * s;
+      const toWorldY = py => (project.bgY || 0) + py * s;
+
+      // ---- wall mask: solid filled regions over the entire wall thickness.
+      // Works for both solid black walls and double-lined (parallel face lines) walls:
+      // for each row/column, short white gaps between two dark runs are flooded,
+      // so the interior between the face lines becomes solid.
+      const maxGap = Math.max(8, Math.round(45 / s)); // px — interior gaps up to ~45 cm get filled
+      const maskH = new Uint8Array(dark);
+      for (let y = 0; y < H; y++) {
+        let x = 0, prevEnd = -1;
+        while (x < W) {
+          if (dark[y * W + x]) {
+            let q = x; while (q + 1 < W && dark[y * W + q + 1]) q++;
+            if (prevEnd >= 0 && x - prevEnd - 1 <= maxGap) for (let k = prevEnd + 1; k < x; k++) maskH[y * W + k] = 1;
+            prevEnd = q; x = q + 1;
+          } else x++;
+        }
+      }
+      const maskV = new Uint8Array(dark);
+      for (let x = 0; x < W; x++) {
+        let y = 0, prevEnd = -1;
+        while (y < H) {
+          if (dark[y * W + x]) {
+            let q = y; while (q + 1 < H && dark[(q + 1) * W + x]) q++;
+            if (prevEnd >= 0 && y - prevEnd - 1 <= maxGap) for (let k = prevEnd + 1; k < y; k++) maskV[k * W + x] = 1;
+            prevEnd = q; y = q + 1;
+          } else y++;
+        }
+      }
+      const wallMask = new Uint8Array(W * H);
+      for (let i = 0; i < W * H; i++) wallMask[i] = (maskH[i] || maskV[i]) ? 1 : 0;
+
+      // ---- wall centerlines from the solid mask (H/V run clustering)
+      const minRun = Math.max(10, Math.round(Math.min(W, H) * 0.015));
+      function runsAlong(horizontal, mask) {
+        const cands = [];
+        const L = horizontal ? W : H;
+        for (let a = 0; a < (horizontal ? H : W); a++) {
+          let p = 0;
+          while (p < L) {
+            const v = horizontal ? mask[a * W + p] : mask[p * W + a];
+            if (v) { let q = p; while (q + 1 < L && (horizontal ? mask[a * W + q + 1] : mask[(q + 1) * W + a])) q++; if (q - p + 1 >= minRun) cands.push(horizontal ? { x1: p, x2: q, y: a } : { y1: p, y2: q, x: a }); p = q + 1; }
+            else p++;
+          }
+        }
+        return cands;
+      }
+      function cluster(cands, horizontal) {
+        const groups = [];
+        for (const c of cands) {
+          const g = groups.find(g => horizontal
+            ? Math.abs(g.y - c.y) <= 4 && c.x1 <= g.x2 && c.x2 >= g.x1
+            : Math.abs(g.x - c.x) <= 4 && c.y1 <= g.y2 && c.y2 >= g.y1);
+          if (g) {
+            if (horizontal) { g.x1 = Math.min(g.x1, c.x1); g.x2 = Math.max(g.x2, c.x2); g.ys.push(c.y); g.y = g.ys.reduce((a, b) => a + b, 0) / g.ys.length; }
+            else { g.y1 = Math.min(g.y1, c.y1); g.y2 = Math.max(g.y2, c.y2); g.xs.push(c.x); g.x = g.xs.reduce((a, b) => a + b, 0) / g.xs.length; }
+          } else groups.push(horizontal ? { x1: c.x1, x2: c.x2, y: c.y, ys: [c.y] } : { y1: c.y1, y2: c.y2, x: c.x, xs: [c.x] });
+        }
+        return groups;
+      }
+      const hGroups = cluster(runsAlong(true, wallMask), true);
+      const vGroups = cluster(runsAlong(false, wallMask), false);
+      const newWalls = [];
+      const wallClusters = []; // keep per-cluster profile info for windows/doors
+      for (const g of hGroups) {
+        const thickPx = g.ys.length;
+        const thickCm = thickPx * s;
+        if ((g.x2 - g.x1) * s < 30 || thickCm < 8) continue;
+        newWalls.push({ id: crypto.randomUUID(), x1: toWorldX(g.x1), y1: toWorldY(g.y), x2: toWorldX(g.x2), y2: toWorldY(g.y), thickness: Math.min(60, Math.max(5, thickCm)) });
+        wallClusters.push({ g, horiz: true, W: newWalls[newWalls.length - 1] });
+      }
+      for (const g of vGroups) {
+        const thickPx = g.xs.length;
+        const thickCm = thickPx * s;
+        if ((g.y2 - g.y1) * s < 30 || thickCm < 8) continue;
+        newWalls.push({ id: crypto.randomUUID(), x1: toWorldX(g.x), y1: toWorldY(g.y1), x2: toWorldX(g.x), y2: toWorldY(g.y2), thickness: Math.min(60, Math.max(5, thickCm)) });
+        wallClusters.push({ g, horiz: false, W: newWalls[newWalls.length - 1] });
+      }
+      if (!newWalls.length) { window.alert('No walls detected. Try a clearer image or calibrate the scale first.'); return; }
+
+      // ---- classify positions along each wall: solid / window / opening ----
+      // Windows: interior empty but both face lines remain (thin parallel lines).
+      // Openings: interior empty AND face lines broken (gap in the wall).
+      const windows = [];
+      const openings = []; // world-space segments along walls where the wall is interrupted
+      for (const { g, horiz } of wallClusters) {
+        const span = horiz ? g.x2 - g.x1 : g.y2 - g.y1;
+        const half = Math.max(1, Math.floor((horiz ? g.ys.length : g.xs.length) / 2));
+        let winStart = -1, opStart = -1;
+        for (let i = 0; i <= span; i++) {
+          const ax = horiz ? g.x1 + i : g.x, ay = horiz ? g.y : g.y1 + i;
+          let fill = 0, total = 0;
+          for (let o = -half - 1; o <= half + 1; o++) {
+            const px = horiz ? ax : ax + o, py = horiz ? ay + o : ay;
+            if (px < 0 || py < 0 || px >= W || py >= H) continue;
+            total++; fill += dark[py * W + px];
+          }
+          const e1 = horiz ? (ay - half >= 0 ? dark[(ay - half) * W + ax] : 0) : (ax - half >= 0 ? dark[ay * W + ax - half] : 0);
+          const e2 = horiz ? (ay + half < H ? dark[(ay + half) * W + ax] : 0) : (ax + half < W ? dark[ay * W + ax + half] : 0);
+          const f = total ? fill / total : 1;
+          const isWindow = f < 0.5 && e1 && e2;
+          const isOpening = !isWindow && f < 0.3 && !(e1 && e2);
+          if (isWindow) { if (winStart < 0) winStart = i; }
+          else { if (winStart >= 0 && i - winStart >= 6 && (i - winStart) * s >= 40 && (i - winStart) * s <= 400) windows.push({ horiz, gx: horiz ? g.x1 + (winStart + i) / 2 : g.x, gy: horiz ? g.y : g.y1 + (winStart + i) / 2, width: (i - winStart) * s }); winStart = -1; }
+          if (isOpening) { if (opStart < 0) opStart = i; }
+          else { if (opStart >= 0 && i - opStart >= 6 && (i - opStart) * s >= 50 && (i - opStart) * s <= 200) openings.push({ horiz, gx: horiz ? g.x1 + (opStart + i) / 2 : g.x, gy: horiz ? g.y : g.y1 + (opStart + i) / 2, width: (i - opStart) * s }); opStart = -1; }
+        }
+      }
+
+      // ---- doors: arc + leaf + wall opening ----
+      const thin = new Uint8Array(W * H);
+      for (let i = 0; i < W * H; i++) thin[i] = dark[i] && !wallMask[i] ? 1 : 0;
+      const thinPts = [];
+      for (let i = 0; i < W * H; i++) if (thin[i]) thinPts.push([i % W, (i / W) | 0]);
+      const arcs = [];
+      const rMin = 40 / s, rMax = 160 / s, T = 2500;
+      for (let it = 0; it < T && thinPts.length >= 3; it++) {
+        const a = thinPts[(Math.random() * thinPts.length) | 0];
+        const b = thinPts[(Math.random() * thinPts.length) | 0];
+        const c = thinPts[(Math.random() * thinPts.length) | 0];
+        const d2 = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+        if (Math.abs(d2) < 1e-6) continue;
+        const ux = ((a[0]*a[0]+a[1]*a[1]) * (b[1]-c[1]) + (b[0]*b[0]+b[1]*b[1]) * (c[1]-a[1]) + (c[0]*c[0]+c[1]*c[1]) * (a[1]-b[1])) / d2;
+        const uy = ((a[0]*a[0]+a[1]*a[1]) * (c[0]-b[0]) + (b[0]*b[0]+b[1]*b[1]) * (a[0]-c[0]) + (c[0]*c[0]+c[1]*c[1]) * (b[0]-a[0])) / d2;
+        const r = Math.hypot(a[0] - ux, a[1] - uy);
+        if (r < rMin || r > rMax) continue;
+        let inliers = 0; const quad = [0, 0, 0, 0];
+        for (const p of thinPts) {
+          if (Math.abs(Math.hypot(p[0] - ux, p[1] - uy) - r) < 1.6) { inliers++; quad[((p[0] >= ux ? 1 : 0) + (p[1] >= uy ? 2 : 0))]++; }
+        }
+        const arcLen = Math.max(...quad);
+        if (inliers >= 20 && arcLen / inliers >= 0.6 && r * s >= 40 && r * s <= 160) arcs.push({ ux, uy, r, inliers });
+      }
+      arcs.sort((a, b) => b.inliers - a.inliers);
+      const doors = [];
+      for (const a of arcs) {
+        if (doors.some(o => Math.hypot(o.ux - a.ux, o.uy - a.uy) < 15 && Math.abs(o.r - a.r) < 10)) continue;
+        doors.push(a); if (doors.length >= 12) break;
+      }
+
+      // ---- measurements: dimension lines (long thin H/V runs outside walls)
+      // plus digit/number components sitting next to them. Room names, notes,
+      // symbols, hatching etc. are thin but not beside a dimension line → ignored.
+      const measMask = new Uint8Array(W * H);
+      const measLines = [];
+      {
+        const lim = Math.max(8, Math.round(0.5 / s * 100)); // ~ min 50 cm line
+        for (const horiz of [true, false]) {
+          const out = runsAlong(horiz, thin);
+          for (const c of out) {
+            const lenPx = horiz ? c.x2 - c.x1 : c.y2 - c.y1;
+            if (lenPx * s >= 40) measLines.push({ horiz, ...c });
+          }
+        }
+        for (const L of measLines) for (let i = 0; i <= (L.horiz ? L.x2 - L.x1 : L.y2 - L.y1); i++) {
+          const px = L.horiz ? L.x1 + i : L.x, py = L.horiz ? L.y : L.y1 + i;
+          if (px >= 0 && py >= 0 && px < W && py < H) measMask[py * W + px] = 1;
+        }
+        // nearby text components count as measurement numbers
+        const seen = new Uint8Array(W * H);
+        const stack = [];
+        for (let i = 0; i < W * H; i++) {
+          if (!thin[i] || seen[i]) continue;
+          const comp = []; stack.length = 0; stack.push(i); seen[i] = 1;
+          let sumX = 0, sumY = 0;
+          while (stack.length) {
+            const j = stack.pop(); comp.push(j); sumX += j % W; sumY += (j / W) | 0;
+            const x = j % W, y = (j / W) | 0;
+            for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+              const nx = x + dx, ny = y + dy, k = ny * W + nx;
+              if (nx >= 0 && ny >= 0 && nx < W && ny < H && !seen[k] && thin[k]) { seen[k] = 1; stack.push(k); }
+            }
+          }
+          if (comp.length < 4 || comp.length > 2000) continue; // ticks/smudges or huge letters
+          const cxp = sumX / comp.length, cyp = sumY / comp.length;
+          const near = measLines.some(L => {
+            const lx = L.horiz ? Math.min(Math.max(cxp, L.x1), L.x2) : L.x;
+            const ly = L.horiz ? L.y : Math.min(Math.max(cyp, L.y1), L.y2);
+            return Math.hypot(cxp - lx, cyp - ly) < Math.max(30, 80 / (s * 2.5));
+          });
+          if (near) for (const j of comp) measMask[j] = 1;
+        }
+      }
+
+      // ---- build result: wall assets as geometry, door/window assets snapped to walls
+      const projs = newWalls.map(w => ({ x1: w.x1, y1: w.y1, x2: w.x2, y2: w.y2 }));
+      function snap(wx, wy) {
+        let best = -1, bd = Infinity, bt = 0;
+        projs.forEach((w, i) => {
+          const dx = w.x2 - w.x1, dy = w.y2 - w.y1, l2 = dx * dx + dy * dy;
+          if (!l2) return;
+          let t = ((wx - w.x1) * dx + (wy - w.y1) * dy) / l2; t = Math.max(0, Math.min(1, t));
+          const d = Math.hypot(w.x1 + t * dx - wx, w.y1 + t * dy - wy);
+          if (d < bd) { bd = d; bt = t; best = i; }
+        });
+        return best < 0 || bd > 150 ? null : { i: best, t: bt };
+      }
+      const newAssets = [];
+      for (const wd of windows) {
+        const hit = snap(toWorldX(wd.gx), toWorldY(wd.gy));
+        if (!hit) continue;
+        const w = projs[hit.i];
+        const len = Math.hypot(w.x2 - w.x1, w.y2 - w.y1) || 1;
+        const hw = Math.min(wd.width / 2, len / 2);
+        newAssets.push({ id: crypto.randomUUID(), type: 'window', wallId: newWalls[hit.i].id, t: Math.min(Math.max(hit.t, hw / len), 1 - hw / len), width: wd.width, swing: 1 });
+      }
+      for (const op of openings) {
+        // door = arc + leaf + opening: require an arc whose hinge sits on this opening
+        const opW = { x: toWorldX(op.gx), y: toWorldY(op.gy) };
+        const match = doors.find(dr => Math.hypot(toWorldX(dr.ux) - opW.x, toWorldY(dr.uy) - opW.y) < Math.max(op.width / 2, 40));
+        if (!match) continue;
+        const hit = snap(opW.x, opW.y);
+        if (!hit) continue;
+        const w = projs[hit.i];
+        const len = Math.hypot(w.x2 - w.x1, w.y2 - w.y1) || 1;
+        const width = Math.min(match.r * s, op.width * 1.2);
+        const hw = Math.min(width / 2, len / 2);
+        newAssets.push({ id: crypto.randomUUID(), type: 'door', wallId: newWalls[hit.i].id, t: Math.min(Math.max(hit.t, hw / len), 1 - hw / len), width, swing: 1 });
+      }
+
+      project.walls.push(...newWalls);
+      project.assets = (project.assets || []).concat(newAssets);
+
+      // measurement mask overlay (kept separate from geometry)
+      try {
+        const mc = document.createElement('canvas'); mc.width = W; mc.height = H;
+        const mctx = mc.getContext('2d');
+        const im = mctx.createImageData(W, H);
+        for (let i = 0; i < W * H; i++) if (measMask[i]) { im.data[i * 4] = 255; im.data[i * 4 + 1] = 153; im.data[i * 4 + 2] = 0; im.data[i * 4 + 3] = 200; }
+        mctx.putImageData(im, 0, 0);
+        project.measOverlay = mc.toDataURL();
+      } catch { project.measOverlay = null; }
+      scheduleSave(); pushHistory(); fitToContent();
+      window.alert(`Detected ${newWalls.length} wall(s), ${newAssets.filter(a => a.type === 'door').length} door(s), ${newAssets.filter(a => a.type === 'window').length} window(s), ${measLines.length} dimension line(s). Orange overlay shows the measurement mask.`);
+    };
+
     document.getElementById('zoomIn').onclick = () => { zoom *= 1.25; applyView(); render(); };
     document.getElementById('zoomOut').onclick = () => { zoom /= 1.25; applyView(); render(); };
     function fitToContent() {
       const r = svg.getBoundingClientRect();
-      if (!project.walls.length) { panX = r.width / 2; panY = r.height / 2; zoom = 0.5; applyView(); render(); return; }
+      if (!project.walls.length && !(project.bgImage && bgSize.w)) { panX = r.width / 2; panY = r.height / 2; zoom = 0.5; applyView(); render(); return; }
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const w of project.walls) {
         minX = Math.min(minX, w.x1, w.x2); maxX = Math.max(maxX, w.x1, w.x2);
         minY = Math.min(minY, w.y1, w.y2); maxY = Math.max(maxY, w.y1, w.y2);
       }
+      if (project.bgImage && bgSize.w) {
+        const s = project.bgScale || 1;
+        minX = Math.min(minX, project.bgX || 0); maxX = Math.max(maxX, (project.bgX || 0) + bgSize.w * s);
+        minY = Math.min(minY, project.bgY || 0); maxY = Math.max(maxY, (project.bgY || 0) + bgSize.h * s);
+      }
+      if (!isFinite(minX)) { panX = r.width / 2; panY = r.height / 2; zoom = 0.5; applyView(); render(); return; }
       const pad = 80 / 1;
       const bw = Math.max(maxX - minX, 1), bh = Math.max(maxY - minY, 1);
       zoom = Math.min((r.width - 80) / bw, (r.height - 80) / bh, 2);
@@ -686,6 +1105,8 @@ const Editor = (() => {
     document.getElementById('wallFill').onchange = applyFill;
 
     // initial view: fit the project's walls
+    loadBgMeta();
+    updateBgButtons();
     fitToContent();
     pushHistory();
   }
